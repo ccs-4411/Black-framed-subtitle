@@ -32,7 +32,7 @@ def sec_to_ass_time(seconds):
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = seconds % 60
-    # ASS 規範的時間格式為 H:MM:SS.CC (百分之一秒，小數點後兩位)
+    # ASS 規範的時間格式為 H:MM:SS.CC (小數點後兩位)
     return f"{h:01d}:{m:02d}:{s:05.2f}"
 
 def hex_to_ass_color(hex_str):
@@ -41,7 +41,7 @@ def hex_to_ass_color(hex_str):
     hex_str = hex_str.lstrip('#')
     if len(hex_str) == 6:
         r, g, b = hex_str[0:2], hex_str[2:4], hex_str[4:6]
-        # ASS 使用 AGBR 格式，&H[邊欄透明度][藍][綠][紅]
+        # ASS 使用 AGBR 格式：&H[邊欄透明度][藍][綠][紅]
         return f"&H00{b}{g}{r}"
     return "&H00FFFFFF"
 
@@ -78,12 +78,11 @@ def get_real_path(file_obj):
     else:
         path = getattr(file_obj, 'name', None)
         
-    # 如果路徑異常或檔案不存在，強制肉搜 Gradio 暫存目錄
+    # 如果路徑異常或檔案不存在，強制肉搜暫存目錄
     if not path or "temp_auto_compressed" in path or not os.path.exists(path):
         print("🕵️ 偵測到異常快取干擾，啟動全硬碟真實原檔肉搜...")
         found_files = glob.glob("/tmp/gradio/*/*.mp4") + glob.glob("/tmp/gradio/*/*.mkv") + glob.glob("**/gradio/*")
         if found_files:
-            # 挑出容量最大的檔案
             found_files.sort(key=lambda x: os.path.getsize(x), reverse=True)
             for f in found_files:
                 if "temp_auto_compressed" not in f and os.path.isfile(f):
@@ -99,7 +98,7 @@ def auto_pre_compress(video):
         return "❌ 錯誤：無法鎖定實體影片位置，請確認網頁上傳進度已達 100%。"
     
     file_size_mb = os.path.getsize(real_path) / (1024 * 1024)
-    return f"⚡【系統提示】原始大影片已 100% 寫入雲端硬碟（大小: {file_size_mb:.1f} MB）！實體路徑已牢牢鎖定。現在您可以放心地反覆點擊「5秒預覽」或「開始全片轉檔任務」。"
+    return f"⚡【系統提示】原始大影片已 100% 寫入雲端硬碟（大小: {file_size_mb:.1f} MB）！實體路徑已牢牢鎖定。現在您可以放心地反覆點擊「10秒預覽」或「開始全片轉檔任務」。"
 
 # ==========================================
 # 【一鍵載入測試檔案】
@@ -121,9 +120,8 @@ def create_ass_file(srt_path, res_w, res_h, pad_h, pos_y, font_zh, font_en, zh_s
     temp_ass = "preview_render.ass" if preview_mode else "full_render.ass"
     ratio = res_h / 1080.0
     
-    # 重新修正 MarginV 計算邏輯：
     # 底部加了 pad_h 的黑框，ASS 畫布總高度變為 res_h + pad_h
-    # 對齊方式 2 (底部正中) 的 MarginV 是從「新畫布的最底端」往上算。
+    # 對齊方式 2 (底部正中) 的 MarginV 是從「新畫布的最底端」往上計算
     m_v = int((pad_h / 2) + pos_y)
     if m_v < 0: m_v = 0
     zh_margin = m_v + int(en_size) + int(15 * ratio)
@@ -136,6 +134,7 @@ def create_ass_file(srt_path, res_w, res_h, pad_h, pos_y, font_zh, font_en, zh_s
     e_b = -1 if en_bold else 0
     e_i = -1 if en_italic else 0
     
+    # 符合 ASS 標準的格式定義
     header = f"[Script Info]\nScriptType: v4.00+\nPlayResX: {res_w}\nPlayResY: {res_h+pad_h}\nScaledBorderAndShadow: yes\n\n"
     header += "[v4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
     header += f"Style: ZH,{font_zh},{zh_size},{ass_c_zh},&H00000000,&H00000000,&H00000000,{z_b},{z_i},0,0,100,100,0,0,1,2,0,2,10,10,{zh_margin},1\n"
@@ -151,13 +150,11 @@ def create_ass_file(srt_path, res_w, res_h, pad_h, pos_y, font_zh, font_en, zh_s
         with open(srt_path, "r", encoding="utf-8-sig") as f:
             content = f.read()
         
-        # 支援多平台換行符號切割
         blocks = re.split(r'\n\s*\n', content.replace('\r\n', '\n').strip())
         
         for b in blocks:
             lines = [x.strip() for x in b.split('\n') if x.strip()]
             if len(lines) >= 3:
-                # 兼容 00:00:00,000 或 00:00:00.000 格式
                 m = re.findall(r"(\d+:\d+:\d+[,.]\d+)", lines[1])
                 if m and len(m) >= 2:
                     s_s, e_s = str_to_sec(m[0]), str_to_sec(m[1])
@@ -166,20 +163,10 @@ def create_ass_file(srt_path, res_w, res_h, pad_h, pos_y, font_zh, font_en, zh_s
                         continue
                         
                     s_t, e_t = sec_to_ass_time(s_s), sec_to_ass_time(e_s)
-                    
-                    # 組合後續所有文本行
                     text_content = " ".join(lines[2:])
                     
-                    # 精準分離中文與英文/其它
-                    # 匹配雙語字幕常見的組合
-                    chi_parts = []
-                    eng_parts = []
-                    
-                    # 簡單的分行或分詞邏輯（優化：直接按中文字元分離）
+                    # 精準分離中文與英文
                     if re.search(r'[\u4e00-\u9fff]', text_content):
-                        # 如果整句有中文，嘗試找出裡面的非中文部分作為英文
-                        # 這邊提供最穩健的 SRT 雙語常見結構處理：如果字幕本身有換行，上面 lines[2:] 已經合併
-                        # 這裡我們保留你原有的基本邏輯，但做防空處理
                         chi = " ".join([t for t in text_content.split() if re.search(r'[\u4e00-\u9fff]', t)])
                         eng = " ".join([t for t in text_content.split() if not re.search(r'[\u4e00-\u9fff]', t)])
                         if not chi: chi = text_content
@@ -190,7 +177,6 @@ def create_ass_file(srt_path, res_w, res_h, pad_h, pos_y, font_zh, font_en, zh_s
                     if not chi and text_content: 
                         chi = text_content
                     
-                    # 寫入 ASS 事件
                     if chi: 
                         header += f"Dialogue: 0,{s_t},{e_t},ZH,,0,0,0,,{chi}\n"
                     if eng and eng != chi: 
@@ -221,7 +207,6 @@ def process_video_task(video, srt, resolution, pad_height, pos_y, font_zh, font_
     is_preview = (mode == "preview")
     output_path = "preview_subtitled.mp4" if is_preview else "output_subtitled.mp4"
     
-    # 清理舊檔案
     if os.path.exists(output_path):
         try: 
             os.remove(output_path)
@@ -237,19 +222,16 @@ def process_video_task(video, srt, resolution, pad_height, pos_y, font_zh, font_
         preview_mode=is_preview
     ))
     
-    # FFmpeg 濾鏡路徑防呆（Windows 與 Linux 處理）
-    # 替換反斜線並對冒號進行轉義，防止 FFmpeg 找不到字幕檔
+    # 針對 FFmpeg 濾鏡進行跨平台路徑特殊字元轉義，防止路徑崩潰
     cleaned_ass_path = safe_ass_path.replace("\\", "/").replace(":", "\\:")
     
     cmd = ["ffmpeg", "-y", "-threads", "2"]
     
     if is_preview:
-        # 預覽模式：截取前 10 秒（提高容錯，部分影片前 5 秒可能為黑屏）
         cmd += ["-ss", "00:00:00", "-t", "10", "-i", working_video_path]
     else:
         cmd += ["-i", working_video_path]
         
-    # 重構 vf 濾鏡鏈：先縮放影片 -> 再加黑框 -> 最後覆蓋 ASS 字幕
     cmd += ["-vf", f"scale={res_w}:{res_h},pad={res_w}:{res_h+pad_height}:0:0:black,subtitles='{cleaned_ass_path}'"]
            
     if is_preview:
@@ -282,7 +264,8 @@ h3, h4 { font-size: 18px !important; font-weight: 900 !important; margin-top: 5p
 .gr-group { border: 1px solid #bdc3c7 !important; border-radius: 8px !important; padding: 12px !important; background-color: #fcfcfc !important; }
 """
 
-with gr.Blocks(title="Python Video Toolbox V9.6", css=custom_css) as demo:
+# Gradio 6.0 規範：css 參數從 Blocks 移到了 launch() 中
+with gr.Blocks(title="Python Video Toolbox V9.6", fill_height=True) as demo:
     gr.Markdown("# 🎬 Python Video Toolbox V9.6 - Railway 雲端獨立版")
     
     with gr.Row():
@@ -327,7 +310,7 @@ with gr.Blocks(title="Python Video Toolbox V9.6", css=custom_css) as demo:
             log_output = gr.Textbox(label="狀態與實時日誌監控", placeholder="等待任務啟動...", lines=3, elem_classes="log-box")
             video_output = gr.Video(label="🚀 2. 轉檔成果 / 預覽影片播放器", elem_classes="video-container")
 
-    # 事件繫結
+    # 事件關係連動
     video_input.upload(fn=auto_pre_compress, inputs=[video_input], outputs=[log_output])
     resolution.change(fn=on_resolution_change, inputs=[resolution], outputs=[zh_size, en_size, pad_height])
     btn_test.click(fn=load_test_files, inputs=[], outputs=[video_input, srt_input, log_output])
@@ -346,4 +329,10 @@ with gr.Blocks(title="Python Video Toolbox V9.6", css=custom_css) as demo:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))
-    demo.launch(server_name="0.0.0.0", server_port=port, max_file_size="2gb", show_api=False)
+    # Gradio 6.0+ 正確寫法：把 css 移入 launch 內，並移除了 show_api
+    demo.launch(
+        server_name="0.0.0.0", 
+        server_port=port, 
+        max_file_size="2gb", 
+        css=custom_css
+    )
