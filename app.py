@@ -32,7 +32,6 @@ def sec_to_ass_time(seconds):
     h = int(seconds // 3600)
     m = int((seconds % 3600) // 60)
     s = seconds % 60
-    # ASS 規範的時間格式為 H:MM:SS.CC (小數點後兩位)
     return f"{h:01d}:{m:02d}:{s:05.2f}"
 
 def hex_to_ass_color(hex_str):
@@ -41,7 +40,6 @@ def hex_to_ass_color(hex_str):
     hex_str = hex_str.lstrip('#')
     if len(hex_str) == 6:
         r, g, b = hex_str[0:2], hex_str[2:4], hex_str[4:6]
-        # ASS 使用 AGBR 格式：&H[邊欄透明度][藍][綠][紅]
         return f"&H00{b}{g}{r}"
     return "&H00FFFFFF"
 
@@ -54,7 +52,6 @@ def on_resolution_change(res_text):
         base_h = 1080
         ratio = current_h / base_h
         
-        # 根據解析度動態計算初始推薦值
         new_zh = int(100 * ratio)
         new_en = int(50 * ratio)
         new_pad = int(220 * ratio)
@@ -78,7 +75,6 @@ def get_real_path(file_obj):
     else:
         path = getattr(file_obj, 'name', None)
         
-    # 如果路徑異常或檔案不存在，強制肉搜暫存目錄
     if not path or "temp_auto_compressed" in path or not os.path.exists(path):
         print("🕵️ 偵測到異常快取干擾，啟動全硬碟真實原檔肉搜...")
         found_files = glob.glob("/tmp/gradio/*/*.mp4") + glob.glob("/tmp/gradio/*/*.mkv") + glob.glob("**/gradio/*")
@@ -109,7 +105,7 @@ def load_test_files():
     
     msg = "【系統提示】已成功載入內建測試檔案！"
     if not v_path or not s_path:
-        msg = "⚠️ 提示：空間內未偵測到 test_video.mp4 或 test_subtitles.srt。"
+        msg = "⚠️ 提示：雲端空間內未偵測到 test_video.mp4 或 test_subtitles.srt，請手動上傳您的檔案。"
         
     return v_path, s_path, msg
 
@@ -120,8 +116,6 @@ def create_ass_file(srt_path, res_w, res_h, pad_h, pos_y, font_zh, font_en, zh_s
     temp_ass = "preview_render.ass" if preview_mode else "full_render.ass"
     ratio = res_h / 1080.0
     
-    # 底部加了 pad_h 的黑框，ASS 畫布總高度變為 res_h + pad_h
-    # 對齊方式 2 (底部正中) 的 MarginV 是從「新畫布的最底端」往上計算
     m_v = int((pad_h / 2) + pos_y)
     if m_v < 0: m_v = 0
     zh_margin = m_v + int(en_size) + int(15 * ratio)
@@ -134,7 +128,6 @@ def create_ass_file(srt_path, res_w, res_h, pad_h, pos_y, font_zh, font_en, zh_s
     e_b = -1 if en_bold else 0
     e_i = -1 if en_italic else 0
     
-    # 符合 ASS 標準的格式定義
     header = f"[Script Info]\nScriptType: v4.00+\nPlayResX: {res_w}\nPlayResY: {res_h+pad_h}\nScaledBorderAndShadow: yes\n\n"
     header += "[v4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
     header += f"Style: ZH,{font_zh},{zh_size},{ass_c_zh},&H00000000,&H00000000,&H00000000,{z_b},{z_i},0,0,100,100,0,0,1,2,0,2,10,10,{zh_margin},1\n"
@@ -165,7 +158,6 @@ def create_ass_file(srt_path, res_w, res_h, pad_h, pos_y, font_zh, font_en, zh_s
                     s_t, e_t = sec_to_ass_time(s_s), sec_to_ass_time(e_s)
                     text_content = " ".join(lines[2:])
                     
-                    # 精準分離中文與英文
                     if re.search(r'[\u4e00-\u9fff]', text_content):
                         chi = " ".join([t for t in text_content.split() if re.search(r'[\u4e00-\u9fff]', t)])
                         eng = " ".join([t for t in text_content.split() if not re.search(r'[\u4e00-\u9fff]', t)])
@@ -190,7 +182,7 @@ def create_ass_file(srt_path, res_w, res_h, pad_h, pos_y, font_zh, font_en, zh_s
     return temp_ass
 
 # ==========================================
-# 【核心：FFmpeg 轉檔/預覽處理中心】
+# 【核心：FFmpeg 轉檔/預覽處理中心 (Linux/Docker 終極防錯版)】
 # ==========================================
 def process_video_task(video, srt, resolution, pad_height, pos_y, font_zh, font_en, zh_size, en_size, color_zh, color_en, zh_bold, zh_italic, en_bold, en_italic, mode="full"):
     if not video or not srt:
@@ -210,45 +202,65 @@ def process_video_task(video, srt, resolution, pad_height, pos_y, font_zh, font_
     if os.path.exists(output_path):
         try: 
             os.remove(output_path)
-        except:
+        except Exception as e:
+            print(f"⚠️ 無法刪除舊檔案: {e}")
             if not is_preview:
                 output_path = f"output_subtitled_{os.getpid()}.mp4"
+                
+    # Docker 內部文泉驛字體名稱對應
+    actual_font_zh = font_zh
+    if "WenQuanYi" in font_zh:
+        actual_font_zh = "WenQuanYi Zen Hei"
                 
     safe_ass_path = os.path.abspath(create_ass_file(
         srt_input_path, 
         res_w, res_h, pad_height, pos_y, 
-        font_zh, font_en, int(zh_size), int(en_size), 
+        actual_font_zh, font_en, int(zh_size), int(en_size), 
         color_zh, color_en, zh_bold, zh_italic, en_bold, en_italic,
         preview_mode=is_preview
     ))
     
-    # 針對 FFmpeg 濾鏡進行跨平台路徑特殊字元轉義，防止路徑崩潰
-    cleaned_ass_path = safe_ass_path.replace("\\", "/").replace(":", "\\:")
+    # Linux/Docker 環境下，subtitles 濾鏡路徑只需替換反斜線，切勿過度轉義冒號
+    cleaned_ass_path = safe_ass_path.replace("\\", "/")
     
     cmd = ["ffmpeg", "-y", "-threads", "2"]
     
     if is_preview:
+        # Fast Seek 放置於 -i 之前，大幅降低雲端預覽的 CPU 消耗與超時機率
         cmd += ["-ss", "00:00:00", "-t", "10", "-i", working_video_path]
     else:
         cmd += ["-i", working_video_path]
         
-    cmd += ["-vf", f"scale={res_w}:{res_h},pad={res_w}:{res_h+pad_height}:0:0:black,subtitles='{cleaned_ass_path}'"]
+    filter_str = f"scale={res_w}:{res_h},pad={res_w}:{res_h+pad_height}:0:0:black,subtitles='{cleaned_ass_path}'"
+    cmd += ["-vf", filter_str]
            
     if is_preview:
-        cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-c:a", "aac", output_path]
+        # 加上 -movflags +faststart 確保預覽影片可在網頁/iOS 裝置上即時串流播放
+        cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "28", "-c:a", "aac", "-movflags", "+faststart", output_path]
     else:
-        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "22", "-c:a", "aac", output_path]
+        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "22", "-c:a", "aac", "-movflags", "+faststart", output_path]
     
     print(f"🎬 執行指令: {' '.join(cmd)}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
     
-    if result.returncode == 0 and os.path.exists(output_path):
-        if is_preview:
-            return output_path, "🔄 10 秒動態效果預覽生成成功！現在您可以反覆微調參數，或直接啟動全片轉檔。"
+    try:
+        # 限制預覽處理時間不超過 45 秒，避免卡死雲端容器
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=45)
+        
+        if result.returncode == 0 and os.path.exists(output_path):
+            if is_preview:
+                return output_path, "🔄 10 秒動態效果預覽生成成功！可於右側播放器檢視。"
+            else:
+                return output_path, "✨ 全片轉檔成功！"
         else:
-            return output_path, "✨ 全片轉檔成功！"
-    else:
-        return None, f"❌ 轉檔發生異常中止。\n錯誤日誌：\n{result.stderr}"
+            error_log = result.stderr if result.stderr else "FFmpeg 未輸出錯誤日誌，請確認編碼設定。"
+            return None, f"❌ FFmpeg 執行失敗 (代碼 {result.returncode})。\n\n【詳細排查日誌】\n{error_log}"
+            
+    except FileNotFoundError:
+        return None, "❌ 系統錯誤：找不到 FFmpeg 執行檔！請確認 Dockerfile 是否確實安裝 ffmpeg。"
+    except subprocess.TimeoutExpired:
+        return None, "❌ 系統錯誤：FFmpeg 執行超時，請嘗試降低解析度（例如 854x480）以減輕雲端運算負擔。"
+    except Exception as e:
+        return None, f"❌ 未知錯誤: {str(e)}"
 
 # ==========================================
 # 【自訂美化 CSS 樣式表】
@@ -264,7 +276,7 @@ h3, h4 { font-size: 18px !important; font-weight: 900 !important; margin-top: 5p
 .gr-group { border: 1px solid #bdc3c7 !important; border-radius: 8px !important; padding: 12px !important; background-color: #fcfcfc !important; }
 """
 
-# ✅ 修正 1：依照 Gradio 6.0 規範，將 css 參數從 Blocks 構造函數中移除，並加入 fill_height
+# ✅ Gradio 6.0 規範：css 參數從此處移除，改由底部的 launch() 載入，並使用 fill_height 確保自適應佈局
 with gr.Blocks(title="Python Video Toolbox V9.6", fill_height=True) as demo:
     gr.Markdown("# 🎬 Python Video Toolbox V9.6 - Railway 雲端獨立版")
     
@@ -310,7 +322,7 @@ with gr.Blocks(title="Python Video Toolbox V9.6", fill_height=True) as demo:
             log_output = gr.Textbox(label="狀態與實時日誌監控", placeholder="等待任務啟動...", lines=3, elem_classes="log-box")
             video_output = gr.Video(label="🚀 2. 轉檔成果 / 預覽影片播放器", elem_classes="video-container")
 
-    # 事件關係連動
+    # 元件交互邏輯
     video_input.upload(fn=auto_pre_compress, inputs=[video_input], outputs=[log_output])
     resolution.change(fn=on_resolution_change, inputs=[resolution], outputs=[zh_size, en_size, pad_height])
     btn_test.click(fn=load_test_files, inputs=[], outputs=[video_input, srt_input, log_output])
@@ -329,7 +341,7 @@ with gr.Blocks(title="Python Video Toolbox V9.6", fill_height=True) as demo:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))
-    # ✅ 修正 2：依照 Gradio 6.0+ 規範，將 css 移入 launch 內，並完全移除已被廢棄的 show_api 參數
+    # ✅ 正確做法：於此處代入 css=custom_css，並徹底移除已被廢棄的 show_api 參數
     demo.launch(
         server_name="0.0.0.0", 
         server_port=port, 
