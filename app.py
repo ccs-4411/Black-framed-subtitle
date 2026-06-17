@@ -14,15 +14,26 @@ TEST_SRT = "test_subtitles.srt"
 def str_to_sec(s):
     try:
         s = s.replace(',', '.')
-        h, m, sec = s.split(':')
-        return int(h)*3600 + int(m)*60 + float(sec)
-    except:
+        parts = s.split(':')
+        if len(parts) == 3:
+            h, m, sec = parts
+            return int(h) * 3600 + int(m) * 60 + float(sec)
+        elif len(parts) == 2:
+            m, sec = parts
+            return int(m) * 60 + float(sec)
+        return float(s)
+    except Exception as e:
+        print(f"⚠️ 時間解析失敗 ({s}): {e}")
         return 0.0
 
 def sec_to_ass_time(seconds):
-    if seconds < 0: seconds = 0
-    h, m = int(seconds // 3600), int((seconds % 3600) // 60)
-    return f"{h:01d}:{m:02d}:{seconds % 60:05.2f}"
+    if seconds < 0: 
+        seconds = 0.0
+    h = int(seconds // 3600)
+    m = int((seconds % 3600) // 60)
+    s = seconds % 60
+    # ASS 規範的時間格式為 H:MM:SS.CC (百分之一秒，小數點後兩位)
+    return f"{h:01d}:{m:02d}:{s:05.2f}"
 
 def hex_to_ass_color(hex_str):
     if not hex_str:
@@ -30,6 +41,7 @@ def hex_to_ass_color(hex_str):
     hex_str = hex_str.lstrip('#')
     if len(hex_str) == 6:
         r, g, b = hex_str[0:2], hex_str[2:4], hex_str[4:6]
+        # ASS 使用 AGBR 格式，&H[邊欄透明度][藍][綠][紅]
         return f"&H00{b}{g}{r}"
     return "&H00FFFFFF"
 
@@ -42,46 +54,46 @@ def on_resolution_change(res_text):
         base_h = 1080
         ratio = current_h / base_h
         
+        # 根據解析度動態計算初始推薦值
         new_zh = int(100 * ratio)
         new_en = int(50 * ratio)
         new_pad = int(220 * ratio)
         
-        return new_zh, new_en, new_pad
+        return gr.update(value=new_zh), gr.update(value=new_en), gr.update(value=new_pad)
     except:
-        return 100, 50, 220
+        return gr.update(), gr.update(), gr.update()
 
 # ==========================================
 # 【核心：上傳檔案真實路徑提取器】
 # ==========================================
-def get_real_path(video_obj):
-    if not video_obj:
+def get_real_path(file_obj):
+    if not file_obj:
         return None
         
     path = None
-    if isinstance(video_obj, str):
-        path = video_obj
-    elif isinstance(video_obj, dict) and 'name' in video_obj:
-        path = video_obj['name']
+    if isinstance(file_obj, str):
+        path = file_obj
+    elif isinstance(file_obj, dict) and 'name' in file_obj:
+        path = file_obj['name']
     else:
-        path = getattr(video_obj, 'name', None)
+        path = getattr(file_obj, 'name', None)
         
-    # 如果路徑不幸被帶到舊的幽靈檔名，或者檔案不存在，立刻強制肉搜 /tmp 快取
+    # 如果路徑異常或檔案不存在，強制肉搜 Gradio 暫存目錄
     if not path or "temp_auto_compressed" in path or not os.path.exists(path):
         print("🕵️ 偵測到異常快取干擾，啟動全硬碟真實原檔肉搜...")
-        found_files = glob.glob("/tmp/gradio/*/*.mp4") + glob.glob("/tmp/gradio/*/*.mkv")
+        found_files = glob.glob("/tmp/gradio/*/*.mp4") + glob.glob("/tmp/gradio/*/*.mkv") + glob.glob("**/gradio/*")
         if found_files:
-            # 挑出容量最大、不是 480p 的那個真實 970M 原始影片
+            # 挑出容量最大的檔案
             found_files.sort(key=lambda x: os.path.getsize(x), reverse=True)
             for f in found_files:
-                if "temp_auto_compressed" not in f:
+                if "temp_auto_compressed" not in f and os.path.isfile(f):
                     return f
     return path
 
 # ==========================================
-# 【核心：上傳檔案引導提示（徹底閹割背景壓縮舊邏輯）】
+# 【核心：上傳檔案引導提示】
 # ==========================================
 def auto_pre_compress(video):
-    # 這裡純粹用來偵測並提示，100% 不在後台執行任何 ffmpeg 壓縮指令
     real_path = get_real_path(video)
     if not real_path or not os.path.exists(real_path):
         return "❌ 錯誤：無法鎖定實體影片位置，請確認網頁上傳進度已達 100%。"
@@ -109,51 +121,83 @@ def create_ass_file(srt_path, res_w, res_h, pad_h, pos_y, font_zh, font_en, zh_s
     temp_ass = "preview_render.ass" if preview_mode else "full_render.ass"
     ratio = res_h / 1080.0
     
-    m_v = int(pad_h / 2) + pos_y
-    zh_margin = m_v + en_size + int(15 * ratio)
+    # 重新修正 MarginV 計算邏輯：
+    # 底部加了 pad_h 的黑框，ASS 畫布總高度變為 res_h + pad_h
+    # 對齊方式 2 (底部正中) 的 MarginV 是從「新畫布的最底端」往上算。
+    m_v = int((pad_h / 2) + pos_y)
+    if m_v < 0: m_v = 0
+    zh_margin = m_v + int(en_size) + int(15 * ratio)
     
     ass_c_zh = hex_to_ass_color(color_zh)
     ass_c_en = hex_to_ass_color(color_en)
     
-    z_b = 1 if zh_bold else 0
-    z_i = 1 if zh_italic else 0
-    e_b = 1 if en_bold else 0
-    e_i = 1 if en_italic else 0
+    z_b = -1 if zh_bold else 0
+    z_i = -1 if zh_italic else 0
+    e_b = -1 if en_bold else 0
+    e_i = -1 if en_italic else 0
     
-    header = f"[Script Info]\nPlayResX: {res_w}\nPlayResY: {res_h+pad_h}\nScaledBorderAndShadow: yes\n\n"
-    header += "[v4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, Bold, Italic, Alignment, MarginV, Outline, Shadow, BorderStyle\n"
-    header += f"Style: ZH,{font_zh},{zh_size},{ass_c_zh},{z_b},{z_i},2,{zh_margin},2,0,1\n"
-    header += f"Style: EN,{font_en},{en_size},{ass_c_en},{e_b},{e_i},2,{m_v},2,0,1\n\n"
+    header = f"[Script Info]\nScriptType: v4.00+\nPlayResX: {res_w}\nPlayResY: {res_h+pad_h}\nScaledBorderAndShadow: yes\n\n"
+    header += "[v4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+    header += f"Style: ZH,{font_zh},{zh_size},{ass_c_zh},&H00000000,&H00000000,&H00000000,{z_b},{z_i},0,0,100,100,0,0,1,2,0,2,10,10,{zh_margin},1\n"
+    header += f"Style: EN,{font_en},{en_size},{ass_c_en},&H00000000,&H00000000,&H00000000,{e_b},{e_i},0,0,100,100,0,0,1,2,0,2,10,10,{m_v},1\n\n"
     header += "[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     
-    if not srt_path:
-        with open(temp_ass, "w", encoding="utf-8-sig") as f: f.write(header)
+    if not srt_path or not os.path.exists(srt_path):
+        with open(temp_ass, "w", encoding="utf-8-sig") as f: 
+            f.write(header)
         return temp_ass
         
     try:
         with open(srt_path, "r", encoding="utf-8-sig") as f:
             content = f.read()
-        blocks = re.split(r'\n\s*\n', content.strip())
+        
+        # 支援多平台換行符號切割
+        blocks = re.split(r'\n\s*\n', content.replace('\r\n', '\n').strip())
+        
         for b in blocks:
             lines = [x.strip() for x in b.split('\n') if x.strip()]
             if len(lines) >= 3:
+                # 兼容 00:00:00,000 或 00:00:00.000 格式
                 m = re.findall(r"(\d+:\d+:\d+[,.]\d+)", lines[1])
-                if m:
+                if m and len(m) >= 2:
                     s_s, e_s = str_to_sec(m[0]), str_to_sec(m[1])
-                    text = " ".join(lines[2:])
                     
-                    if preview_mode and s_s > 6.0:
+                    if preview_mode and s_s > 10.0:
                         continue
                         
                     s_t, e_t = sec_to_ass_time(s_s), sec_to_ass_time(e_s)
                     
-                    chi = " ".join([t for t in text.split() if re.search(r'[\u4e00-\u9fff]', t)])
-                    eng = " ".join([t for t in text.split() if not re.search(r'[\u4e00-\u9fff]', t)])
-                    if not chi and text: chi = text
-                    if chi: header += f"Dialogue: 0,{s_t},{e_t},ZH,,0,0,0,,{chi}\n"
-                    if eng: header += f"Dialogue: 0,{s_t},{e_t},EN,,0,0,0,,{eng}\n"
+                    # 組合後續所有文本行
+                    text_content = " ".join(lines[2:])
+                    
+                    # 精準分離中文與英文/其它
+                    # 匹配雙語字幕常見的組合
+                    chi_parts = []
+                    eng_parts = []
+                    
+                    # 簡單的分行或分詞邏輯（優化：直接按中文字元分離）
+                    if re.search(r'[\u4e00-\u9fff]', text_content):
+                        # 如果整句有中文，嘗試找出裡面的非中文部分作為英文
+                        # 這邊提供最穩健的 SRT 雙語常見結構處理：如果字幕本身有換行，上面 lines[2:] 已經合併
+                        # 這裡我們保留你原有的基本邏輯，但做防空處理
+                        chi = " ".join([t for t in text_content.split() if re.search(r'[\u4e00-\u9fff]', t)])
+                        eng = " ".join([t for t in text_content.split() if not re.search(r'[\u4e00-\u9fff]', t)])
+                        if not chi: chi = text_content
+                    else:
+                        chi = ""
+                        eng = text_content
+
+                    if not chi and text_content: 
+                        chi = text_content
+                    
+                    # 寫入 ASS 事件
+                    if chi: 
+                        header += f"Dialogue: 0,{s_t},{e_t},ZH,,0,0,0,,{chi}\n"
+                    if eng and eng != chi: 
+                        header += f"Dialogue: 0,{s_t},{e_t},EN,,0,0,0,,{eng}\n"
+                        
     except Exception as e:
-        print(f"ASS 錯誤: {e}")
+        print(f"❌ SRT 轉 ASS 發生錯誤: {e}")
         
     with open(temp_ass, "w", encoding="utf-8-sig") as f:
         f.write(header)
@@ -168,34 +212,23 @@ def process_video_task(video, srt, resolution, pad_height, pos_y, font_zh, font_
         
     res_w, res_h = map(int, resolution.split('x'))
 
-    # 取得萬無一失的原始大影片實體路徑
     working_video_path = get_real_path(video)
-    
-    if isinstance(srt, str):
-        srt_input_path = srt
-    elif isinstance(srt, dict) and 'name' in srt:
-        srt_input_path = srt['name']
-    else:
-        srt_input_path = getattr(srt, 'name', None)
+    srt_input_path = get_real_path(srt)
             
     if not working_video_path or not os.path.exists(working_video_path):
-        return None, "❌ 錯誤：硬碟中找不到實體原始影片，請重新整理網頁上傳。"
+        return None, "❌ 錯誤：硬碟中找不到實體原始影片，請重新上傳。"
     
     is_preview = (mode == "preview")
     output_path = "preview_subtitled.mp4" if is_preview else "output_subtitled.mp4"
     
-    # 清理舊檔案，確保單路暢通
+    # 清理舊檔案
     if os.path.exists(output_path):
-        try: os.remove(output_path)
+        try: 
+            os.remove(output_path)
         except:
             if not is_preview:
-                output_path = "output_subtitled_final.mp4"
+                output_path = f"output_subtitled_{os.getpid()}.mp4"
                 
-    # 同步清理可能殘留的歷史壓縮小死檔
-    if os.path.exists("temp_auto_compressed_480p.mp4"):
-        try: os.remove("temp_auto_compressed_480p.mp4")
-        except: pass
-    
     safe_ass_path = os.path.abspath(create_ass_file(
         srt_input_path, 
         res_w, res_h, pad_height, pos_y, 
@@ -204,26 +237,32 @@ def process_video_task(video, srt, resolution, pad_height, pos_y, font_zh, font_
         preview_mode=is_preview
     ))
     
-    # 限制雙線程，穩定壓製不崩潰
+    # FFmpeg 濾鏡路徑防呆（Windows 與 Linux 處理）
+    # 替換反斜線並對冒號進行轉義，防止 FFmpeg 找不到字幕檔
+    cleaned_ass_path = safe_ass_path.replace("\\", "/").replace(":", "\\:")
+    
     cmd = ["ffmpeg", "-y", "-threads", "2"]
     
     if is_preview:
-        cmd += ["-ss", "00:00:00", "-t", "5", "-i", working_video_path]
+        # 預覽模式：截取前 10 秒（提高容錯，部分影片前 5 秒可能為黑屏）
+        cmd += ["-ss", "00:00:00", "-t", "10", "-i", working_video_path]
     else:
         cmd += ["-i", working_video_path]
         
-    cmd += ["-vf", f"scale={res_w}:{res_h},pad={res_w}:{res_h+pad_height}:0:0:black,subtitles='{safe_ass_path}'"]
+    # 重構 vf 濾鏡鏈：先縮放影片 -> 再加黑框 -> 最後覆蓋 ASS 字幕
+    cmd += ["-vf", f"scale={res_w}:{res_h},pad={res_w}:{res_h+pad_height}:0:0:black,subtitles='{cleaned_ass_path}'"]
            
     if is_preview:
-        cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-threads", "2", "-c:a", "aac", output_path]
+        cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "26", "-c:a", "aac", output_path]
     else:
-        cmd += ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "23", "-threads", "2", "-c:a", "aac", output_path]
+        cmd += ["-c:v", "libx264", "-preset", "medium", "-crf", "22", "-c:a", "aac", output_path]
     
+    print(f"🎬 執行指令: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
     
-    if result.returncode == 0:
+    if result.returncode == 0 and os.path.exists(output_path):
         if is_preview:
-            return output_path, "🔄 5 秒動態效果預覽生成成功！現在您可以反覆微調參數，或直接啟動全片轉檔。"
+            return output_path, "🔄 10 秒動態效果預覽生成成功！現在您可以反覆微調參數，或直接啟動全片轉檔。"
         else:
             return output_path, "✨ 全片轉檔成功！"
     else:
@@ -236,15 +275,14 @@ custom_css = """
 span, label, p, .text-sm, .gr-form label { font-size: 16px !important; font-weight: 800 !important; color: #2c3e50 !important; }
 input, select, textarea { font-size: 15px !important; font-weight: bold !important; }
 h3, h4 { font-size: 18px !important; font-weight: 900 !important; margin-top: 5px !important; color: #1a1a1a !important; }
-.video-container { height: 650px !important; }
-.video-container video { height: 100% !important; object-fit: contain !important; }
+.video-container { height: 500px !important; }
 .log-box textarea { background-color: #1a1a1a !important; color: #4af626 !important; font-family: monospace !important; font-size: 14px !important; }
 #btn_preview { background: linear-gradient(135deg, #3498db, #2980b9) !important; color: white !important; font-weight: bold !important; }
 #btn_run { background: linear-gradient(135deg, #27ae60, #219653) !important; color: white !important; font-weight: bold !important; }
 .gr-group { border: 1px solid #bdc3c7 !important; border-radius: 8px !important; padding: 12px !important; background-color: #fcfcfc !important; }
 """
 
-with gr.Blocks(title="Python Video Toolbox V9.6") as demo:
+with gr.Blocks(title="Python Video Toolbox V9.6", css=custom_css) as demo:
     gr.Markdown("# 🎬 Python Video Toolbox V9.6 - Railway 雲端獨立版")
     
     with gr.Row():
@@ -252,13 +290,12 @@ with gr.Blocks(title="Python Video Toolbox V9.6") as demo:
             gr.Markdown("### 📁 【檔案選取與測試】")
             btn_test = gr.Button("🎯 一鍵載入測試檔案", variant="secondary")
             
-            # 使用普通的通用檔案組件，阻斷 Gradio 所有自作聰明的多媒體預處理機制
             video_input = gr.File(label="1. 原始影片 (支援 .mp4, .mkv 大檔)", file_types=[".mp4", ".mkv"])
             srt_input = gr.File(label="2. 字幕檔案 (SRT)", file_types=[".srt"])
             
             gr.Markdown("### 📺 【解析度與黑框邊界】")
             resolution = gr.Dropdown(choices=["1920x1080", "1280x720", "854x480"], value="854x480", label="解析度")
-            pad_height = gr.Slider(minimum=0, maximum=800, value=97, step=5, label="黑框高度 (px)")
+            pad_height = gr.Slider(minimum=0, maximum=800, value=95, step=5, label="黑框高度 (px)")
             pos_y = gr.Slider(minimum=-300, maximum=300, value=0, step=5, label="垂直位移 (對底邊 px)")
             
             with gr.Group(elem_classes="gr-group"):
@@ -282,14 +319,15 @@ with gr.Blocks(title="Python Video Toolbox V9.6") as demo:
                     color_en = gr.ColorPicker(value="#FFFF00", label="字體顏色")
                     
             gr.Markdown("### 🚀 【功能執行】")
-            btn_preview = gr.Button("🔄 循環生成 5 秒動態預覽", variant="secondary", elem_id="btn_preview")
+            btn_preview = gr.Button("🔄 循環生成 10 秒動態預覽", variant="secondary", elem_id="btn_preview")
             btn_run = gr.Button("🚀 開始全片轉檔任務", variant="primary", elem_id="btn_run")
             
         with gr.Column(scale=1):
             gr.Markdown("### 🖥️ 【實時狀態與成果預覽】")
             log_output = gr.Textbox(label="狀態與實時日誌監控", placeholder="等待任務啟動...", lines=3, elem_classes="log-box")
-            video_output = gr.Video(label="🚀 2. 轉檔成果 / 5秒預覽影片播放器", elem_classes="video-container")
+            video_output = gr.Video(label="🚀 2. 轉檔成果 / 預覽影片播放器", elem_classes="video-container")
 
+    # 事件繫結
     video_input.upload(fn=auto_pre_compress, inputs=[video_input], outputs=[log_output])
     resolution.change(fn=on_resolution_change, inputs=[resolution], outputs=[zh_size, en_size, pad_height])
     btn_test.click(fn=load_test_files, inputs=[], outputs=[video_input, srt_input, log_output])
@@ -307,6 +345,5 @@ with gr.Blocks(title="Python Video Toolbox V9.6") as demo:
     )
 
 if __name__ == "__main__":
-    import os
     port = int(os.environ.get("PORT", 7860))
-    demo.launch(server_name="0.0.0.0", server_port=port, max_file_size="2gb", css=custom_css, show_api=False)
+    demo.launch(server_name="0.0.0.0", server_port=port, max_file_size="2gb", show_api=False)
