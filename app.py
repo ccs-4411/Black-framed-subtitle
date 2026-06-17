@@ -264,7 +264,7 @@ h3, h4 { font-size: 18px !important; font-weight: 900 !important; margin-top: 5p
 .gr-group { border: 1px solid #bdc3c7 !important; border-radius: 8px !important; padding: 12px !important; background-color: #fcfcfc !important; }
 """
 
-# Gradio 6.0 規範：css 參數從 Blocks 移到了 launch() 中
+# ✅ 修正 1：依照 Gradio 6.0 規範，將 css 參數從 Blocks 構造函數中移除，並加入 fill_height
 with gr.Blocks(title="Python Video Toolbox V9.6", fill_height=True) as demo:
     gr.Markdown("# 🎬 Python Video Toolbox V9.6 - Railway 雲端獨立版")
     
@@ -329,7 +329,7 @@ with gr.Blocks(title="Python Video Toolbox V9.6", fill_height=True) as demo:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 7860))
-    # Gradio 6.0+ 正確寫法：把 css 移入 launch 內，並移除了 show_api
+    # ✅ 修正 2：依照 Gradio 6.0+ 規範，將 css 移入 launch 內，並完全移除已被廢棄的 show_api 參數
     demo.launch(
         server_name="0.0.0.0", 
         server_port=port, 
