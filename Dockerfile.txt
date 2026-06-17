@@ -1,0 +1,20 @@
+FROM python:3.10-slim
+
+# 安裝 FFmpeg 與開源中文字型
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ffmpeg \
+    fonts-wqy-zenhei \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# 複製依賴項目並安裝
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 複製其餘所有程式碼
+COPY . .
+
+# 💡 終結 Crashed 關鍵：直接在啟動指令中強行注入環境變數
+# 關閉分析追蹤、強行監聽 0.0.0.0、並告訴 Gradio 允許任意網域連入
+CMD ["sh", "-c", "GRADIO_ANALYTICS_ENABLED=False GRADIO_SERVER_NAME=0.0.0.0 GRADIO_SERVER_PORT=${PORT:-7860} GRADIO_ALLOW_COR=true python app.py"]
