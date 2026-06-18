@@ -67,15 +67,12 @@ def get_real_path(file_obj):
     if not file_obj:
         return None
 
-    # 如果是字典，嘗試取得 'name' 或 'path'
     if isinstance(file_obj, dict):
         return file_obj.get('name') or file_obj.get('path')
 
-    # 如果是 FileData 物件，使用 .name
     if hasattr(file_obj, 'name'):
         return file_obj.name
 
-    # 如果已經是字串，直接回傳
     if isinstance(file_obj, str):
         return file_obj
 
@@ -222,7 +219,6 @@ def process_video_task(video, srt, resolution, pad_height, pos_y, font_zh, font_
 
     # 將路徑中的反斜線換成正斜線（Linux 相容），並用雙引號包裹，防止特殊字元問題
     cleaned_ass_path = safe_ass_path.replace("\\", "/")
-    # 濾鏡字串使用雙引號包住路徑
     filter_str = f"scale={res_w}:{res_h},pad={res_w}:{res_h+pad_height}:0:0:black,subtitles=\"{cleaned_ass_path}\""
 
     cmd = ["ffmpeg", "-y", "-threads", "2"]
