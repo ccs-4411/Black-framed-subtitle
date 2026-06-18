@@ -79,11 +79,12 @@ def process_video_task(video_input, subtitle_input, progress=gr.Progress()):
         
     progress(0, desc="🚀 正在準備影音處理環境...")
     
-    # 定義輸出的相對路徑檔名（避免絕對路徑引發的 FFmpeg 濾鏡解析 Bug）
-    output_video = "preview_subtitled.mp4"
-    preview_ass = "preview_render.ass"
+    # 獲取當前專案目錄的絕對路徑，確保檔案生成在絕對安全的位置
+    current_dir = os.path.abspath(os.path.dirname(__file__))
+    output_video = os.path.join(current_dir, "preview_subtitled.mp4")
+    preview_ass = os.path.join(current_dir, "preview_render.ass")
     
-    # 移除舊的殘留檔案確保乾淨
+    # 清理舊檔案
     if os.path.exists(output_video):
         os.remove(output_video)
     if os.path.exists(preview_ass):
@@ -94,15 +95,23 @@ def process_video_task(video_input, subtitle_input, progress=gr.Progress()):
     if not srt_to_ass(subtitle_input, preview_ass):
         return None, "❌ 字幕格式轉換失敗，請檢查 SRT 檔案編碼是否為 UTF-8。"
         
+    # 🛠️ 【核心 Debug 檢查】：確保實體檔案真的躺在硬碟裡
+    if not os.path.exists(preview_ass) or os.path.getsize(preview_ass) == 0:
+        return None, f"❌ 實體 ASS 檔案未成功寫入磁碟！路徑: {preview_ass}"
+    
+    # 🛠️ 【關鍵修正】：對 Linux FFmpeg 的 subtitles 濾鏡進行雙重特殊字元轉義
+    # 針對 Linux：冒號變 \: ，斜線變 \/，最後外面包裹單引號
+    escaped_ass_path = preview_ass.replace(":", "\\:").replace("/", "\\/")
+    subtitles_filter = f"subtitles='{escaped_ass_path}'"
+    
     # 2. 建立 FFmpeg 轉檔指令
-    # 【關鍵修正】：subtitles 濾鏡值直接傳入相對路徑檔名，不要用單引號包裹，解決 Unable to open 報錯！
     cmd = [
         FFMPEG_PATH, "-y",
         "-threads", "2",
         "-ss", "00:00:00",
         "-t", "10",
         "-i", video_input,
-        "-vf", "scale=854:480,pad=854:575:0:0:black,subtitles=preview_render.ass",
+        "-vf", f"scale=854:480,pad=854:575:0:0:black,{subtitles_filter}",
         "-c:v", "libx264",
         "-preset", "ultrafast",
         "-crf", "26",
@@ -110,7 +119,7 @@ def process_video_task(video_input, subtitle_input, progress=gr.Progress()):
         output_video
     ]
     
-    log_msg = f"🎬 執行指令: {' '.join(cmd)}\n\n⏳ 正在調用 FFmpeg 渲染中，請稍候...\n"
+    log_msg = f"🎬 執行指令: {' '.join(cmd)}\n\n⏳ 正在調用 FFmpeg 轉碼中...\n"
     print(log_msg)
     progress(0.5, desc="🎬 FFmpeg 背景轉碼渲染中（10秒預覽）...")
     
@@ -126,7 +135,7 @@ def process_video_task(video_input, subtitle_input, progress=gr.Progress()):
             return None, log_msg + f"\n❌ 轉檔失敗，未能生成輸出檔案。\n環境錯誤資訊:\n{result.stderr}"
             
     except subprocess.CalledProcessError as e:
-        error_msg = log_msg + f"\n💥 FFmpeg 執行期間崩潰！\n錯誤碼: {e.returncode}\n\n【FFmpeg 錯誤日誌】\n{e.stderr}"
+        error_msg = log_msg + f"\n💥 FFmpeg 執行失敗 (傳回碼 {e.returncode})。\n\n【FFmpeg stderr】\n{e.stderr}"
         print(error_msg)
         return None, error_msg
     except Exception as e:
@@ -140,13 +149,12 @@ def process_video_task(video_input, subtitle_input, progress=gr.Progress()):
 with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal", secondary_hue="slate")) as demo:
     gr.Markdown(
         """
-        # 🎬 Python Video Toolbox v9.7 (Railway Cloud)
+        # 🎬 Python Video Toolbox v9.8 (Railway Cloud)
         ### 雙語智能字幕渲染與黑框剪輯工具
         """
     )
     
     with gr.Row():
-        # 左側控制輸入面板
         with gr.Column(scale=1):
             gr.Markdown("### 📂 1. 上傳來源檔案")
             video_file = gr.File(label="選擇原始影片 (MP4)", file_types=[".mp4"])
@@ -155,7 +163,6 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal", secondary_hue="slate")) 
             gr.Markdown("### ⚙️ 2. 自動化工作流程")
             btn_preview = gr.Button("🔄 循環生成 10 秒動態預覽", variant="primary", size="lg")
             
-        # 右側輸出與日誌面板
         with gr.Column(scale=1):
             gr.Markdown("### 📺 3. 渲染成果預覽")
             video_output = gr.Video(label="雙語字幕加黑邊預覽播放器", interactive=False)
@@ -169,7 +176,6 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal", secondary_hue="slate")) 
                 autoscroll=True
             )
 
-    # 綁定按鈕事件與核心邏輯
     btn_preview.click(
         fn=process_video_task,
         inputs=[video_file, subtitle_file],
@@ -177,7 +183,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal", secondary_hue="slate")) 
     )
 
 # =====================================================================
-# 🚀 啟動進入點：對應 Railway 埠號規範
+# 🚀 啟動進入點
 # =====================================================================
 if __name__ == "__main__":
     server_port = int(os.environ.get("PORT", 7860))
