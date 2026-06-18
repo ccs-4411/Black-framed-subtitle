@@ -234,7 +234,8 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal", secondary_hue="slate")) 
             
             with gr.Group():
                 gr.Markdown("### 🔤 【中文字型樣式】")
-                zh_font_dropdown = gr.Dropdown(choices=["WenQuanYi Zen Hei", "Arial", "Noto Sans CJK TC"], value="WenQuanYi Zen Hei", label="中文字型")
+                # 💡 優化點：將預設值與選項調整為 Linux 伺服器支援的 Noto Sans CJK TC 與 Sans 泛用字型
+                zh_font_dropdown = gr.Dropdown(choices=["Noto Sans CJK TC", "Sans", "DejaVu Sans"], value="Noto Sans CJK TC", label="中文字型")
                 with gr.Row():
                     zh_b = gr.Checkbox(label="粗體", value=True)
                     zh_i = gr.Checkbox(label="斜體", value=False)
