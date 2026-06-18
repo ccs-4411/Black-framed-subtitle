@@ -189,10 +189,7 @@ if __name__ == "__main__":
     server_port = int(os.environ.get("PORT", 7860))
     print(f"🚀 正在啟動生產環境網頁伺服器，監聽通訊埠: {server_port}")
     
-    demo.launch(
+   demo.launch(
         server_name="0.0.0.0",
-        server_port=server_port,
-        share=False,
-        show_api=False,
-        analytics_enabled=False
+        server_port=server_port
     )
