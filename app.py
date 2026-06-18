@@ -217,7 +217,7 @@ def process_video_task(
 # 🎨 介面佈局：旗艦視覺優化與極致動態連動
 # =====================================================================
 with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal", secondary_hue="slate")) as demo:
-    gr.Markdown("# 🎬 Python Video Toolbox v12.0 (動態智慧連動終極版)")
+    gr.Markdown("黑框影片與雙語字幕合併")
     
     with gr.Row():
         # 左側控制面板 (佔比維持 1)
