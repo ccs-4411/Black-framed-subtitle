@@ -25,31 +25,27 @@ print(f"📡 系統確認 FFmpeg 核心路徑: {FFMPEG_PATH}")
 def update_ui_components(resolution):
     """
     根據使用者選擇的解析度，動態調整 UI 介面上的滑桿最大值、預設值與基準字體大小
-    讓使用者不需要在切換解析度後手動重新計算繁瑣的像素值
     """
     if resolution == "1920x1080":
-        # 1080p: 黑框最高可到 1800px，預設 215px
         return (
             gr.update(maximum=1800, value=215, label="黑框高度 (1080p 最佳 px)"),
             gr.update(minimum=-600, maximum=600, value=0, label="垂直位移 (1080p 基準 px)"),
-            gr.update(value=99),  # 中文字體 44 * 2.25 = 99
-            gr.update(value=50)   # 英文字體 22 * 2.25 = 49.5 -> 50
+            gr.update(value=99),  # 中文字體
+            gr.update(value=50)   # 英文字體
         )
     elif resolution == "1280x720":
-        # 720p: 黑框最高可到 1200px，預設 142px
         return (
             gr.update(maximum=1200, value=142, label="黑框高度 (720p 最佳 px)"),
             gr.update(minimum=-450, maximum=450, value=0, label="垂直位移 (720p 基準 px)"),
-            gr.update(value=66),  # 中文字體 44 * 1.5 = 66
-            gr.update(value=33)   # 英文字體 22 * 1.5 = 33
+            gr.update(value=66),
+            gr.update(value=33)
         )
     else:
-        # 854x480 或 原始比例: 回歸最原始精緻的 480p 參數
         return (
             gr.update(maximum=800, value=95, label="黑框高度 (480p 基準 px)"),
             gr.update(minimum=-300, maximum=300, value=0, label="垂直位移 (480p 基準 px)"),
-            gr.update(value=44),  # 中文字體預設 44
-            gr.update(value=22)   # 英文字體預設 22
+            gr.update(value=44),
+            gr.update(value=22)
         )
 
 # =====================================================================
@@ -144,7 +140,9 @@ def process_video_task(
     resolution, pad_height, v_offset,
     zh_font, zh_bold, zh_italic, zh_size, zh_color,
     en_font, en_bold, en_italic, en_size, en_color,
-    mode="preview", progress=gr.Progress()
+    preview_start_minutes,  # 新增：預覽起始分鐘數
+    mode="preview", 
+    progress=gr.Progress()
 ):
     if not video_input or not subtitle_input:
         return None, "❌ 請先上傳影片檔案與字幕檔案！"
@@ -189,7 +187,13 @@ def process_video_task(
     
     cmd = [FFMPEG_PATH, "-y", "-threads", "2"]
     if mode == "preview":
-        cmd.extend(["-ss", "00:00:00", "-t", "10"])
+        # 根據使用者設定的起始分鐘數計算 -ss 時間
+        mins = int(preview_start_minutes) if preview_start_minutes else 0
+        hh = mins // 60
+        mm = mins % 60
+        ss = 0
+        start_time = f"{hh:02d}:{mm:02d}:{ss:02d}"
+        cmd.extend(["-ss", start_time, "-t", "10"])
         
     cmd.extend([
         "-i", video_input,
@@ -202,6 +206,8 @@ def process_video_task(
     ])
     
     log_msg = f"⚙️ 介面參數與解析度同步成功！\n📺 輸出模式: {resolution}\n📏 實際黑框增高像素: {pad_height}px | 實際中文字體: {zh_size}px\n"
+    if mode == "preview":
+        log_msg += f"⏱️ 預覽起始時間: {start_time}\n"
     progress(0.5, desc=f"🎬 FFmpeg 正在進行 [{mode_text}] 渲染中...")
     
     try:
@@ -220,7 +226,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal", secondary_hue="slate")) 
     gr.Markdown("🎬 Python Video Toolbox v12.0  黑框影片與雙語字幕合併")
     
     with gr.Row():
-        # 左側控制面板 (佔比維持 1)
+        # 左側控制面板
         with gr.Column(scale=1):
             gr.Markdown("### 📂 1. 檔案來源")
             video_file = gr.File(label="選擇原始影片 (MP4)", file_types=[".mp4"])
@@ -232,33 +238,40 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal", secondary_hue="slate")) 
                 pad_slider = gr.Slider(minimum=0, maximum=800, value=95, step=1, label="黑框高度 (480p 基準 px)")
                 offset_slider = gr.Slider(minimum=-300, maximum=300, value=0, step=1, label="垂直位移 (480p 基準 px)")
             
-            with gr.Group():
-                gr.Markdown("### 🔤 【中文字型樣式】")
-                # 💡 優化點：將預設值與選項調整為 Linux 伺服器支援的 Noto Sans CJK TC 與 Sans 泛用字型
-                zh_font_dropdown = gr.Dropdown(choices=["Noto Sans CJK TC", "Sans", "DejaVu Sans"], value="Noto Sans CJK TC", label="中文字型")
-                with gr.Row():
-                    zh_b = gr.Checkbox(label="粗體", value=True)
-                    zh_i = gr.Checkbox(label="斜體", value=False)
-                with gr.Row():
-                    zh_size_input = gr.Number(label="中文字體大小 (px)", value=44)
-                    zh_color_input = gr.ColorPicker(label="字體顏色", value="#FFFFFF")
+            # 按鈕：設定中外文字幕（點擊展開下方設定面板）
+            with gr.Row():
+                btn_expand_subtitle = gr.Button("🎨 設定中外文字幕", variant="secondary")
             
-            with gr.Group():
-                gr.Markdown("### 🔤 【英文字型樣式】")
-                en_font_dropdown = gr.Dropdown(choices=["Arial", "Courier New", "Times New Roman"], value="Arial", label="英文字型")
-                with gr.Row():
-                    en_b = gr.Checkbox(label="粗體", value=False)
-                    en_i = gr.Checkbox(label="斜體", value=True)
-                with gr.Row():
-                    en_size_input = gr.Number(label="英文字體大小 (px)", value=22)
-                    en_color_input = gr.ColorPicker(label="字體顏色", value="#FFFF00")
+            # 中外文字幕設定摺疊面板（預設關閉）
+            with gr.Accordion(label="🎨 中外文字幕樣式設定（點擊展開/收合）", open=False) as subtitle_accordion:
+                with gr.Group():
+                    gr.Markdown("### 🔤 【中文字型樣式】")
+                    zh_font_dropdown = gr.Dropdown(choices=["Noto Sans CJK TC", "Sans", "DejaVu Sans"], value="Noto Sans CJK TC", label="中文字型")
+                    with gr.Row():
+                        zh_b = gr.Checkbox(label="粗體", value=True)
+                        zh_i = gr.Checkbox(label="斜體", value=False)
+                    with gr.Row():
+                        zh_size_input = gr.Number(label="中文字體大小 (px)", value=44)
+                        zh_color_input = gr.ColorPicker(label="字體顏色", value="#FFFFFF")
+                
+                with gr.Group():
+                    gr.Markdown("### 🔤 【英文字型樣式】")
+                    en_font_dropdown = gr.Dropdown(choices=["Arial", "Courier New", "Times New Roman"], value="Arial", label="英文字型")
+                    with gr.Row():
+                        en_b = gr.Checkbox(label="粗體", value=False)
+                        en_i = gr.Checkbox(label="斜體", value=True)
+                    with gr.Row():
+                        en_size_input = gr.Number(label="英文字體大小 (px)", value=22)
+                        en_color_input = gr.ColorPicker(label="字體顏色", value="#FFFF00")
             
             gr.Markdown("### ⚙️ 2. 工作流程")
+            # 新增：預覽起始時間設定（分鐘）
+            preview_start_input = gr.Number(label="預覽起始時間（分鐘）", value=5, precision=0, step=1, minimum=0)
             with gr.Row():
                 btn_preview = gr.Button("🔄 生成 10 秒預覽", variant="secondary")
                 btn_full = gr.Button("🚀 執行全片轉檔", variant="primary")
                 
-        # 右側輸出面板 (透過 scale=1.5 放大寬度)
+        # 右側輸出面板
         with gr.Column(scale=1.5):
             gr.Markdown("### 📺 3. 渲染成果預覽")
             video_output = gr.Video(label="雙語字幕加黑邊預覽播放器", interactive=False, height=520)
@@ -266,15 +279,22 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal", secondary_hue="slate")) 
             gr.Markdown("### 📝 系統日誌")
             log_output = gr.Textbox(label="Console Log", placeholder="等待任務觸發...", lines=3, max_lines=4, autoscroll=True)
 
-    # 🧱 所有 UI 輸入組件打包
+    # 按鈕展開字幕設定面板
+    btn_expand_subtitle.click(
+        fn=lambda: gr.update(open=True),
+        outputs=[subtitle_accordion]
+    )
+
+    # 所有 UI 輸入組件打包（順序須與 process_video_task 參數順序一致）
     input_components = [
         video_file, subtitle_file,
         res_select, pad_slider, offset_slider,
         zh_font_dropdown, zh_b, zh_i, zh_size_input, zh_color_input,
-        en_font_dropdown, en_b, en_i, en_size_input, en_color_input
+        en_font_dropdown, en_b, en_i, en_size_input, en_color_input,
+        preview_start_input   # 新增
     ]
 
-    # ⚡ 【最核心魔法】：監聽解析度選單。當使用者一改變解析度，立刻連動刷新滑桿上限、預設值與字體大小！
+    # 解析度連動更新
     res_select.change(
         fn=update_ui_components,
         inputs=[res_select],
@@ -282,8 +302,16 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal", secondary_hue="slate")) 
     )
 
     # 按鈕事件綁定
-    btn_preview.click(fn=lambda *args: process_video_task(*args, mode="preview"), inputs=input_components, outputs=[video_output, log_output])
-    btn_full.click(fn=lambda *args: process_video_task(*args, mode="full"), inputs=input_components, outputs=[video_output, log_output])
+    btn_preview.click(
+        fn=lambda *args: process_video_task(*args, mode="preview"),
+        inputs=input_components,
+        outputs=[video_output, log_output]
+    )
+    btn_full.click(
+        fn=lambda *args: process_video_task(*args, mode="full"),
+        inputs=input_components,
+        outputs=[video_output, log_output]
+    )
 
 if __name__ == "__main__":
     demo.launch()
