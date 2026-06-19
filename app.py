@@ -140,7 +140,7 @@ def process_video_task(
     resolution, pad_height, v_offset,
     zh_font, zh_bold, zh_italic, zh_size, zh_color,
     en_font, en_bold, en_italic, en_size, en_color,
-    preview_start_minutes,  # 新增：預覽起始分鐘數
+    preview_start_minutes,  # 預覽起始分鐘數
     mode="preview", 
     progress=gr.Progress()
 ):
@@ -232,17 +232,19 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal", secondary_hue="slate")) 
             video_file = gr.File(label="選擇原始影片 (MP4)", file_types=[".mp4"])
             subtitle_file = gr.File(label="選擇字幕檔案 (SRT)", file_types=[".srt"])
             
-            with gr.Group():
-                gr.Markdown("### 📺 【解析度與黑框邊界】")
-                res_select = gr.Dropdown(choices=["854x480", "1280x720", "1920x1080", "原始比例"], value="854x480", label="解析度")
-                pad_slider = gr.Slider(minimum=0, maximum=800, value=95, step=1, label="黑框高度 (480p 基準 px)")
-                offset_slider = gr.Slider(minimum=-300, maximum=300, value=0, step=1, label="垂直位移 (480p 基準 px)")
+            # 📐 解析度與黑框進階設定（摺疊式，預設關閉）
+            with gr.Accordion("📐 解析度與黑框進階設定", open=False):
+                with gr.Group():
+                    gr.Markdown("### 📺 【解析度與黑框邊界】")
+                    res_select = gr.Dropdown(choices=["854x480", "1280x720", "1920x1080", "原始比例"], value="854x480", label="解析度")
+                    pad_slider = gr.Slider(minimum=0, maximum=800, value=95, step=1, label="黑框高度 (480p 基準 px)")
+                    offset_slider = gr.Slider(minimum=-300, maximum=300, value=0, step=1, label="垂直位移 (480p 基準 px)")
             
             # 按鈕：設定中外文字幕（點擊展開下方設定面板）
             with gr.Row():
                 btn_expand_subtitle = gr.Button("🎨 設定中外文字幕", variant="secondary")
             
-            # 中外文字幕設定摺疊面板（預設關閉）
+            # 🎨 中外文字幕樣式設定（摺疊式，預設關閉）
             with gr.Accordion(label="🎨 中外文字幕樣式設定（點擊展開/收合）", open=False) as subtitle_accordion:
                 with gr.Group():
                     gr.Markdown("### 🔤 【中文字型樣式】")
@@ -265,7 +267,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal", secondary_hue="slate")) 
                         en_color_input = gr.ColorPicker(label="字體顏色", value="#FFFF00")
             
             gr.Markdown("### ⚙️ 2. 工作流程")
-            # 新增：預覽起始時間設定（分鐘）
+            # 預覽起始時間設定（分鐘），預設 5 分鐘
             preview_start_input = gr.Number(label="預覽起始時間（分鐘）", value=5, precision=0, step=1, minimum=0)
             with gr.Row():
                 btn_preview = gr.Button("🔄 生成 10 秒預覽", variant="secondary")
@@ -291,7 +293,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal", secondary_hue="slate")) 
         res_select, pad_slider, offset_slider,
         zh_font_dropdown, zh_b, zh_i, zh_size_input, zh_color_input,
         en_font_dropdown, en_b, en_i, en_size_input, en_color_input,
-        preview_start_input   # 新增
+        preview_start_input
     ]
 
     # 解析度連動更新
