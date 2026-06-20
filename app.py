@@ -89,28 +89,51 @@ def get_video_height(video_path):
 
 
 # =========================================================
-# 字幕清理與雙語字體分離（僅用於 .srt）
+# 字幕清理與雙語字體/顏色分離（安全優化版 .srt）
 # =========================================================
 def clean_and_prepare_srt(input_sub_path, output_sub_path):
     try:
         with open(input_sub_path, "r", encoding="utf-8", errors="ignore") as f:
-            lines = f.readlines()
-        cleaned_lines = []
-        for line in lines:
-            # 1. 清除原本可能殘留的 HTML 標籤
-            line = re.sub(r"<[^>]+>", "", line)
-            line = re.sub(r"\{[^}]+\}", "", line)
-            
-            strip_line = line.strip()
-            # 2. 判斷是否為純外文行：有內容、不含中文、但包含英文字母
-            if strip_line and not re.search(r"[\u4e00-\u9fa5]", strip_line) and re.search(r"[a-zA-Z]", strip_line):
-                # 自動幫外文行包上縮小標籤（相較於中文主字體縮小 2 個層級）
-                line = f'<font size="-2">{strip_line}</font>\n'
+            content = f.read()
+        
+        # 統一換行符號為 \n，並依據空行切分成一個個字幕區塊
+        blocks = content.replace("\r\n", "\n").split("\n\n")
+        processed_blocks = []
+        
+        for block in blocks:
+            lines = block.strip().split("\n")
+            if len(lines) < 3:
+                if block.strip():
+                    processed_blocks.append(block.strip())
+                continue
                 
-            cleaned_lines.append(line)
+            seq = lines[0]
+            timeline = lines[1]
+            sub_text_lines = lines[2:]  # 實際的字幕文字行
             
+            new_sub_lines = []
+            for i, text_line in enumerate(sub_text_lines):
+                # 移除任何原本殘留的標籤，確保乾淨
+                cleaned_line = re.sub(r"<[^>]+>", "", text_line)
+                cleaned_line = re.sub(r"\{[^}]+\}", "", cleaned_line).strip()
+                
+                if not cleaned_line:
+                    continue
+                
+                # 安全結構判斷：如果總共有多行字幕，且目前讀到第二行（通常就是英文/外文行）
+                if len(sub_text_lines) >= 2 and i == 1:
+                    # 💡 這裡同時設定了 size="-2"（縮小）與 color="#FFFF00"（變黃色）
+                    new_sub_lines.append(f'<font size="-2" color="#FFFF00">{cleaned_line}</font>')
+                else:
+                    new_sub_lines.append(cleaned_line)
+            
+            # 重新拼回單個字幕區塊
+            new_block = f"{seq}\n{timeline}\n" + "\n".join(new_sub_lines)
+            processed_blocks.append(new_block)
+            
+        # 將所有區塊拼回完整的 srt 檔案
         with open(output_sub_path, "w", encoding="utf-8") as f:
-            f.writelines(cleaned_lines)
+            f.write("\n\n".join(processed_blocks) + "\n\n")
         return True
     except Exception as e:
         print(f"字幕純淨化與雙語分離失敗: {e}")
@@ -155,7 +178,6 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, target_resolution, 
         use_force_style = True
     elif sub_ext in [".ass", ".ssa", ".ast"]:
         final_sub_path = subtitle_path
-        # 如果使用者勾選「強制修改 ASS 字幕大小」，就啟用強制樣式
         use_force_style = force_ass_style
     else:
         cleaned_sub_path = os.path.join(TEMP_DIR, f"clean_{task_id}.srt")
@@ -206,7 +228,7 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, target_resolution, 
         f"{mode_text}\n"
         f"原始高度: {orig_height}px -> 輸出高度: {target_height}px。\n"
         f"字幕類型: {sub_ext}\n"
-        f"字體樣式: {'❌ 使用字幕原生樣式' if not use_force_style else f'⚠️ 強制覆蓋樣式 (中文基準大小: {final_cn_size}px，外文自動縮小)'}"
+        f"字體樣式: {'❌ 使用字幕原生樣式' if not use_force_style else f'⚠️ 強制覆蓋樣式 (主行: {final_cn_size}px 白色，次行: 自動縮小且變黃色)'}"
     )
 
     cmd = ["ffmpeg", "-y", "-i", video_path]
@@ -270,7 +292,7 @@ start_background_cleanup()
 # Gradio UI
 # =========================================================
 with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as demo:
-    gr.Markdown("# 🎬 影片與字幕自動合併工具 (雙語大小分流優化版)")
+    gr.Markdown("# 🎬 影片與字幕自動合併工具 (電影級雙語字體版)")
 
     with gr.Row():
         with gr.Column():
@@ -306,8 +328,8 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
                     maximum=100,         
                     value=45,            
                     step=1,
-                    label="主要中文字幕大小",
-                    info="建議：1080p 設 45~55，720p 設 30~40（雙語 .srt 字幕中的純英文行會由系統自動等比例縮小）"
+                    label="主要中文字幕大小 (白色)",
+                    info="建議：1080p 設 45~55，720p 設 30~40（雙語 .srt 字幕中的第二行會自動縮小並變黃色）"
                 )
 
             with gr.Row():
