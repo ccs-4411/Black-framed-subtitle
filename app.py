@@ -125,9 +125,9 @@ def build_subtitle_filter(subtitle_path, font_size, margin_v):
 
 
 # =========================================================
-# 核心：影片與字幕合併（已調整預設字體下限與預設值）
+# 核心：影片與字幕合併
 # =========================================================
-def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mode=False):
+def merge_video_subtitle(video_path, subtitle_path, cn_size, target_resolution, force_ass_style, preview_mode=False):
     if not video_path or not subtitle_path:
         return None, "❌ 請確認已上傳影片與字幕檔案。"
 
@@ -136,8 +136,9 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
 
     sub_ext = os.path.splitext(subtitle_path)[1].lower()
     final_sub_path = subtitle_path
+    
+    # 判斷是否需要強制套用樣式
     use_force_style = False
-
     if sub_ext == ".srt":
         cleaned_sub_path = os.path.join(TEMP_DIR, f"clean_{task_id}.srt")
         if clean_and_prepare_srt(subtitle_path, cleaned_sub_path):
@@ -145,7 +146,8 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
         use_force_style = True
     elif sub_ext in [".ass", ".ssa", ".ast"]:
         final_sub_path = subtitle_path
-        use_force_style = False
+        # 如果使用者打勾「強制修改 ASS 字幕大小」，就啟用強制樣式
+        use_force_style = force_ass_style
     else:
         cleaned_sub_path = os.path.join(TEMP_DIR, f"clean_{task_id}.srt")
         if clean_and_prepare_srt(subtitle_path, cleaned_sub_path):
@@ -155,30 +157,49 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
     prefix = "preview_" if preview_mode else "full_"
     output_path = os.path.join(TEMP_DIR, f"{prefix}{task_id}.mp4")
 
-    # ========== 動態縮放 ==========
-    video_height = get_video_height(video_path)
-    scale_factor = video_height / 1080.0
+    # ========== 解析度與縮放比例計算 ==========
+    orig_height = get_video_height(video_path)
+    
+    # 根據選單設定目標高度
+    if target_resolution == "1080p (1920x1080)":
+        target_height = 1080
+    elif target_resolution == "720p (1280x720)":
+        target_height = 720
+    elif target_resolution == "480p (854x480)":
+        target_height = 480
+    else:
+        target_height = orig_height  # 原始解析度
 
-    # 調整：最小字體從 8 提高到 15，避免過小
+    # 根據「最終輸出的解析度」來計算字體縮放比例
+    scale_factor = target_height / 1080.0
     final_cn_size = max(int(cn_size * scale_factor), 15)
     final_margin_v = max(int(15 * scale_factor), 6)
 
+    # 構建 FFmpeg 濾鏡鏈 (Video Filter Chain)
+    # 關鍵：先縮放影片解析度，再把字幕壓上去，這樣字幕的大小才會對齊新的解析度！
+    filter_elements = []
+    if target_height != orig_height:
+        filter_elements.append(f"scale=-2:{target_height}")
+
     if use_force_style:
-        video_filter = build_subtitle_filter(
+        sub_filter = build_subtitle_filter(
             subtitle_path=final_sub_path,
             font_size=final_cn_size,
             margin_v=final_margin_v
         )
     else:
         safe_sub_path = final_sub_path.replace("\\", "/").replace(":", "\\:")
-        video_filter = f"subtitles='{safe_sub_path}'"
+        sub_filter = f"subtitles='{safe_sub_path}'"
+    
+    filter_elements.append(sub_filter)
+    video_filter = ","join(filter_elements)
 
     mode_text = "【測試模式 - 僅擷取前2分鐘】" if preview_mode else "【正式完整模式】"
     info_msg = (
         f"{mode_text}\n"
-        f"影片高度: {video_height}px。\n"
-        f"字幕類型: {'.srt (強制樣式)' if use_force_style else '樣式字幕 (保留原始樣式)'}\n"
-        f"若為 .srt，套用絕對像素大小 -> 中文預估: {final_cn_size}px。"
+        f"原始高度: {orig_height}px -> 輸出高度: {target_height}px。\n"
+        f"字幕類型: {sub_ext}\n"
+        f"字體樣式: {'❌ 使用字幕原生樣式' if not use_force_style else f'⚠️ 強制覆蓋樣式 (預估大小: {final_cn_size}px)'}"
     )
 
     cmd = ["ffmpeg", "-y", "-i", video_path]
@@ -224,11 +245,11 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
 # =========================================================
 # Gradio 按鈕分流函式
 # =========================================================
-def handle_full_merge(video, subtitle, cn_sz, en_sz):
-    return merge_video_subtitle(video, subtitle, cn_sz, en_sz, preview_mode=False)
+def handle_full_merge(video, subtitle, cn_sz, res, force_ass):
+    return merge_video_subtitle(video, subtitle, cn_sz, res, force_ass, preview_mode=False)
 
-def handle_preview_merge(video, subtitle, cn_sz, en_sz):
-    return merge_video_subtitle(video, subtitle, cn_sz, en_sz, preview_mode=True)
+def handle_preview_merge(video, subtitle, cn_sz, res, force_ass):
+    return merge_video_subtitle(video, subtitle, cn_sz, res, force_ass, preview_mode=True)
 
 
 # =========================================================
@@ -242,7 +263,7 @@ start_background_cleanup()
 # Gradio UI
 # =========================================================
 with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as demo:
-    gr.Markdown("# 🎬 影片與字幕自動合併工具")
+    gr.Markdown("# 🎬 影片與字幕自動合併工具 (解析度修正版)")
 
     with gr.Row():
         with gr.Column():
@@ -257,22 +278,29 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
             )
 
             with gr.Row():
-                cn_size_input = gr.Slider(
-                    minimum=10,
-                    maximum=80,          # 放寬上限
-                    value=40,            # 預設值從 20 提高至 40
-                    step=1,
-                    label="中文/雙語字幕基準大小 (僅 .srt 有效)",
-                    info="對 .srt 強制套用此大小（建議 1080p 約 40~50，720p 約 30~40）"
+                # 新增：解析度選擇器
+                resolution_input = gr.Dropdown(
+                    choices=["原始解析度", "1080p (1920x1080)", "720p (1280x720)", "480p (854x480)"],
+                    value="1080p (1920x1080)",
+                    label="3. 輸出影片解析度",
+                    info="調整解析度可直接影響字幕的相對大小，並加快壓製速度"
+                )
+                
+                # 新增：是否強制覆蓋 ASS 樣式
+                force_ass_style_input = gr.Checkbox(
+                    label="強制修改 ASS/AST 字幕大小",
+                    value=True,
+                    info="若打勾，滑桿設定將對 ASS 生效；若取消，則保留 ASS 原生特效與字體。"
                 )
 
-                en_size_input = gr.Slider(
-                    minimum=6,
-                    maximum=40,
-                    value=12,
+            with gr.Row():
+                cn_size_input = gr.Slider(
+                    minimum=10,
+                    maximum=100,         
+                    value=45,            
                     step=1,
-                    label="純外文字幕基準大小 (預留)",
-                    info="目前僅保留參數，尚未實作自動語系判斷"
+                    label="中文/雙語字幕基準大小",
+                    info="建議：1080p 設 45~55，720p 設 30~40"
                 )
 
             with gr.Row():
@@ -293,13 +321,13 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
 
     btn_preview.click(
         fn=handle_preview_merge,
-        inputs=[video_input, sub_input, cn_size_input, en_size_input],
+        inputs=[video_input, sub_input, cn_size_input, resolution_input, force_ass_style_input],
         outputs=[video_output, status_output]
     )
 
     btn_submit.click(
         fn=handle_full_merge,
-        inputs=[video_input, sub_input, cn_size_input, en_size_input],
+        inputs=[video_input, sub_input, cn_size_input, resolution_input, force_ass_style_input],
         outputs=[video_output, status_output]
     )
 
