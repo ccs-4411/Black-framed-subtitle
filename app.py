@@ -113,14 +113,12 @@ def get_video_height(video_path):
 
 
 # =========================================================
-# 字幕清理
+# 字幕清理（僅用於 .srt）
 # =========================================================
 def clean_and_prepare_srt(input_sub_path, output_sub_path):
     """
     強力移除字幕內所有干擾樣式，還原為最純淨的純文字 SRT
-    注意：
-    - 這樣做對 ASS 也能讀，但 ASS 的格式化會被清掉
-    - 如果你希望保留 ASS 樣式，就不要清 ASS
+    只對 .srt 使用，.ass 保持原樣
     """
     try:
         with open(input_sub_path, "r", encoding="utf-8", errors="ignore") as f:
@@ -144,17 +142,14 @@ def clean_and_prepare_srt(input_sub_path, output_sub_path):
 
 
 # =========================================================
-# 產生字幕濾鏡
+# 產生字幕濾鏡（含強制樣式）
 # =========================================================
 def build_subtitle_filter(subtitle_path, font_size, margin_v):
     """
-    產生 ffmpeg subtitles filter 字串
+    產生 ffmpeg subtitles filter 字串，強制套用樣式（用於 .srt）
     """
-    # Windows / Linux 路徑保護
     safe_sub_path = subtitle_path.replace("\\", "/").replace(":", "\\:")
 
-    # 字型名稱可依你需要改
-    # Railway 若有裝 fonts-noto-cjk，通常 Noto Sans CJK TC 可用
     style = (
         f"Fontname=Noto Sans CJK TC,"
         f"FontSize={font_size},"
@@ -168,14 +163,14 @@ def build_subtitle_filter(subtitle_path, font_size, margin_v):
 
 
 # =========================================================
-# 核心：影片與字幕合併
+# 核心：影片與字幕合併（已修改分流邏輯）
 # =========================================================
 def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mode=False):
     """
     video_path: 影片路徑
     subtitle_path: 字幕路徑
-    cn_size: 中文/雙語字幕基準大小
-    en_size: 純外文字幕基準大小 (目前保留參數，未做自動語系判斷)
+    cn_size: 中文/雙語字幕基準大小 (僅對 .srt 有效)
+    en_size: 純外文字幕基準大小 (保留參數，未使用)
     preview_mode: True 時只輸出前 2 分鐘
     """
     if not video_path or not subtitle_path:
@@ -186,22 +181,32 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
 
     task_id = str(uuid.uuid4())
 
-    # 產出清理後字幕檔
-    cleaned_sub_path = os.path.join(TEMP_DIR, f"clean_{task_id}.srt")
-
     # 判斷副檔名
     sub_ext = os.path.splitext(subtitle_path)[1].lower()
 
     # 預設：最後給 ffmpeg 用的字幕檔路徑
     final_sub_path = subtitle_path
+    use_force_style = False   # 預設不使用強制樣式
 
-    # 對 .srt 做清理；如果是 .ass，這版也會清成 .srt 風格純文字
-    # 若你想保留 ASS 樣式，可改成只處理 .srt
-    if sub_ext in [".srt", ".ass"]:
+    # ----- 分流處理 -----
+    if sub_ext == ".srt":
+        # 對 .srt 清理並強制套用樣式
+        cleaned_sub_path = os.path.join(TEMP_DIR, f"clean_{task_id}.srt")
         if clean_and_prepare_srt(subtitle_path, cleaned_sub_path):
             final_sub_path = cleaned_sub_path
         else:
-            final_sub_path = subtitle_path
+            final_sub_path = subtitle_path  # 清理失敗則用原始檔
+        use_force_style = True
+    elif sub_ext in [".ass", ".ssa", ".ast"]:
+        # 保留樣式字幕，不清理、不強制覆蓋
+        final_sub_path = subtitle_path
+        use_force_style = False
+    else:
+        # 其他未知格式，保守處理：當作 .srt 處理（清理 + 強制）
+        cleaned_sub_path = os.path.join(TEMP_DIR, f"clean_{task_id}.srt")
+        if clean_and_prepare_srt(subtitle_path, cleaned_sub_path):
+            final_sub_path = cleaned_sub_path
+        use_force_style = True
 
     # 區分測試版影片與正式版影片命名
     prefix = "preview_" if preview_mode else "full_"
@@ -211,22 +216,28 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
     video_height = get_video_height(video_path)
     scale_factor = video_height / 1080.0
 
-    # 目前先沿用你的做法：主要使用 cn_size
-    # en_size 參數保留，之後若你要做「純英文字幕判斷」再接進來
+    # 計算縮放後的字體大小與邊距（僅用於 .srt）
     final_cn_size = max(int(cn_size * scale_factor), 8)
     final_margin_v = max(int(15 * scale_factor), 6)
 
-    video_filter = build_subtitle_filter(
-        subtitle_path=final_sub_path,
-        font_size=final_cn_size,
-        margin_v=final_margin_v
-    )
+    # ---------- 建構字幕濾鏡 ----------
+    if use_force_style:
+        video_filter = build_subtitle_filter(
+            subtitle_path=final_sub_path,
+            font_size=final_cn_size,
+            margin_v=final_margin_v
+        )
+    else:
+        # 不加 force_style，保留原始樣式
+        safe_sub_path = final_sub_path.replace("\\", "/").replace(":", "\\:")
+        video_filter = f"subtitles='{safe_sub_path}'"
 
     mode_text = "【測試模式 - 僅擷取前2分鐘】" if preview_mode else "【正式完整模式】"
     info_msg = (
         f"{mode_text}\n"
         f"影片高度: {video_height}px。\n"
-        f"套用絕對像素大小 -> 中文預估: {final_cn_size}px。"
+        f"字幕類型: {'.srt (強制樣式)' if use_force_style else '樣式字幕 (保留原始樣式)'}\n"
+        f"若為 .srt，套用絕對像素大小 -> 中文預估: {final_cn_size}px。"
     )
 
     # ================= FFmpeg 指令 =================
@@ -236,7 +247,6 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
         "-i", video_path
     ]
 
-    # 預覽模式只輸出前 PREVIEW_SECONDS 秒
     if preview_mode:
         cmd.extend(["-t", str(PREVIEW_SECONDS)])
 
@@ -267,11 +277,10 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
             print("FFmpeg 錯誤日誌：\n", process.stderr)
             return None, f"❌ FFmpeg 壓製失敗。\n\n{process.stderr}"
 
-        # 成功後，若有建立清理字幕檔就保留或刪除皆可
-        # 這裡直接刪掉中間清理字幕檔
-        if os.path.exists(cleaned_sub_path):
+        # 若建立了清理檔，刪除之
+        if use_force_style and final_sub_path != subtitle_path:
             try:
-                os.remove(cleaned_sub_path)
+                os.remove(final_sub_path)
             except Exception:
                 pass
 
@@ -319,8 +328,8 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
             )
 
             sub_input = gr.File(
-                label="2. 上傳字幕檔案 (.srt / .ass)",
-                file_types=[".srt", ".ass"]
+                label="2. 上傳字幕檔案 (.srt / .ass / .ssa / .ast)",
+                file_types=[".srt", ".ass", ".ssa", ".ast"]
             )
 
             with gr.Row():
@@ -329,8 +338,8 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
                     maximum=60,
                     value=20,
                     step=1,
-                    label="中文/雙語字幕基準大小",
-                    info="以 1080p 為基礎的中文尺寸（預設 20）"
+                    label="中文/雙語字幕基準大小 (僅 .srt 有效)",
+                    info="對 .srt 強制套用此大小；樣式字幕 (.ass/.ast) 則忽略此設定"
                 )
 
                 en_size_input = gr.Slider(
@@ -338,8 +347,8 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
                     maximum=40,
                     value=12,
                     step=1,
-                    label="純外文字幕基準大小",
-                    info="目前先保留參數，後續可擴充自動判斷純英文字幕尺寸"
+                    label="純外文字幕基準大小 (預留)",
+                    info="目前僅保留參數，尚未實作自動語系判斷"
                 )
 
             with gr.Row():
