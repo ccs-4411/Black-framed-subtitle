@@ -13,10 +13,7 @@ import gradio as gr
 TEMP_DIR = "temp_files"
 os.makedirs(TEMP_DIR, exist_ok=True)
 
-# 自動清理：超過幾小時的暫存檔刪除
 TEMP_FILE_EXPIRE_HOURS = 6
-
-# 預覽模式只輸出前 120 秒
 PREVIEW_SECONDS = 120
 
 
@@ -24,21 +21,15 @@ PREVIEW_SECONDS = 120
 # 工具函式：背景清理舊暫存檔
 # =========================================================
 def cleanup_old_temp_files(folder=TEMP_DIR, expire_hours=TEMP_FILE_EXPIRE_HOURS):
-    """
-    刪除超過 expire_hours 的暫存檔
-    """
     if not os.path.exists(folder):
         return
-
     now = time.time()
     expire_seconds = expire_hours * 3600
-
     try:
         for name in os.listdir(folder):
             path = os.path.join(folder, name)
             if not os.path.isfile(path):
                 continue
-
             try:
                 mtime = os.path.getmtime(path)
                 if now - mtime > expire_seconds:
@@ -51,14 +42,10 @@ def cleanup_old_temp_files(folder=TEMP_DIR, expire_hours=TEMP_FILE_EXPIRE_HOURS)
 
 
 def start_background_cleanup():
-    """
-    啟動時先清一次，之後每 1 小時清一次
-    """
     def loop():
         while True:
             cleanup_old_temp_files()
             time.sleep(3600)
-
     cleanup_old_temp_files()
     t = threading.Thread(target=loop, daemon=True)
     t.start()
@@ -70,12 +57,10 @@ def start_background_cleanup():
 def check_ffmpeg_tools():
     ffmpeg_path = shutil.which("ffmpeg")
     ffprobe_path = shutil.which("ffprobe")
-
     if not ffmpeg_path:
         print("【系統警告】找不到 ffmpeg，請確認 Railway 已安裝 ffmpeg。")
     else:
         print(f"【系統初始化】ffmpeg 路徑: {ffmpeg_path}")
-
     if not ffprobe_path:
         print("【系統警告】找不到 ffprobe，請確認 Railway 已安裝 ffmpeg。")
     else:
@@ -86,9 +71,6 @@ def check_ffmpeg_tools():
 # 影片解析度偵測
 # =========================================================
 def get_video_height(video_path):
-    """
-    使用 ffprobe 自動偵測影片的實際垂直解析度(高度)
-    """
     cmd = [
         "ffprobe",
         "-v", "error",
@@ -98,13 +80,7 @@ def get_video_height(video_path):
         video_path
     ]
     try:
-        result = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True
-        )
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
         height = int(result.stdout.strip())
         return height
     except Exception as e:
@@ -116,25 +92,16 @@ def get_video_height(video_path):
 # 字幕清理（僅用於 .srt）
 # =========================================================
 def clean_and_prepare_srt(input_sub_path, output_sub_path):
-    """
-    強力移除字幕內所有干擾樣式，還原為最純淨的純文字 SRT
-    只對 .srt 使用，.ass 保持原樣
-    """
     try:
         with open(input_sub_path, "r", encoding="utf-8", errors="ignore") as f:
             lines = f.readlines()
-
         cleaned_lines = []
         for line in lines:
-            # 去除 HTML 標籤
             line = re.sub(r"<[^>]+>", "", line)
-            # 去除 {xxx} 樣式標記
             line = re.sub(r"\{[^}]+\}", "", line)
             cleaned_lines.append(line)
-
         with open(output_sub_path, "w", encoding="utf-8") as f:
             f.writelines(cleaned_lines)
-
         return True
     except Exception as e:
         print(f"字幕純淨化失敗: {e}")
@@ -145,11 +112,7 @@ def clean_and_prepare_srt(input_sub_path, output_sub_path):
 # 產生字幕濾鏡（含強制樣式）
 # =========================================================
 def build_subtitle_filter(subtitle_path, font_size, margin_v):
-    """
-    產生 ffmpeg subtitles filter 字串，強制套用樣式（用於 .srt）
-    """
     safe_sub_path = subtitle_path.replace("\\", "/").replace(":", "\\:")
-
     style = (
         f"Fontname=Noto Sans CJK TC,"
         f"FontSize={font_size},"
@@ -158,69 +121,48 @@ def build_subtitle_filter(subtitle_path, font_size, margin_v):
         f"Shadow=0,"
         f"MarginV={margin_v}"
     )
-
     return f"subtitles='{safe_sub_path}':force_style='{style}'"
 
 
 # =========================================================
-# 核心：影片與字幕合併
+# 核心：影片與字幕合併（已調整預設字體下限與預設值）
 # =========================================================
 def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mode=False):
-    """
-    video_path: 影片路徑
-    subtitle_path: 字幕路徑
-    cn_size: 中文/雙語字幕基準大小 (僅對 .srt 有效)
-    en_size: 純外文字幕基準大小 (保留參數，未使用)
-    preview_mode: True 時只輸出前 2 分鐘
-    """
     if not video_path or not subtitle_path:
         return None, "❌ 請確認已上傳影片與字幕檔案。"
 
-    # 啟動前先清一次舊檔
     cleanup_old_temp_files()
-
     task_id = str(uuid.uuid4())
 
-    # 判斷副檔名
     sub_ext = os.path.splitext(subtitle_path)[1].lower()
-
-    # 預設：最後給 ffmpeg 用的字幕檔路徑
     final_sub_path = subtitle_path
-    use_force_style = False   # 預設不使用強制樣式
+    use_force_style = False
 
-    # ----- 分流處理 -----
     if sub_ext == ".srt":
-        # 對 .srt 清理並強制套用樣式
         cleaned_sub_path = os.path.join(TEMP_DIR, f"clean_{task_id}.srt")
         if clean_and_prepare_srt(subtitle_path, cleaned_sub_path):
             final_sub_path = cleaned_sub_path
-        else:
-            final_sub_path = subtitle_path  # 清理失敗則用原始檔
         use_force_style = True
     elif sub_ext in [".ass", ".ssa", ".ast"]:
-        # 保留樣式字幕，不清理、不強制覆蓋
         final_sub_path = subtitle_path
         use_force_style = False
     else:
-        # 其他未知格式，保守處理：當作 .srt 處理（清理 + 強制）
         cleaned_sub_path = os.path.join(TEMP_DIR, f"clean_{task_id}.srt")
         if clean_and_prepare_srt(subtitle_path, cleaned_sub_path):
             final_sub_path = cleaned_sub_path
         use_force_style = True
 
-    # 區分測試版影片與正式版影片命名
     prefix = "preview_" if preview_mode else "full_"
     output_path = os.path.join(TEMP_DIR, f"{prefix}{task_id}.mp4")
 
-    # ================= 核心動態縮放邏輯 =================
+    # ========== 動態縮放 ==========
     video_height = get_video_height(video_path)
     scale_factor = video_height / 1080.0
 
-    # 計算縮放後的字體大小與邊距（僅用於 .srt）
-    final_cn_size = max(int(cn_size * scale_factor), 8)
+    # 調整：最小字體從 8 提高到 15，避免過小
+    final_cn_size = max(int(cn_size * scale_factor), 15)
     final_margin_v = max(int(15 * scale_factor), 6)
 
-    # ---------- 建構字幕濾鏡 ----------
     if use_force_style:
         video_filter = build_subtitle_filter(
             subtitle_path=final_sub_path,
@@ -228,7 +170,6 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
             margin_v=final_margin_v
         )
     else:
-        # 不加 force_style，保留原始樣式
         safe_sub_path = final_sub_path.replace("\\", "/").replace(":", "\\:")
         video_filter = f"subtitles='{safe_sub_path}'"
 
@@ -240,16 +181,9 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
         f"若為 .srt，套用絕對像素大小 -> 中文預估: {final_cn_size}px。"
     )
 
-    # ================= FFmpeg 指令 =================
-    cmd = [
-        "ffmpeg",
-        "-y",
-        "-i", video_path
-    ]
-
+    cmd = ["ffmpeg", "-y", "-i", video_path]
     if preview_mode:
         cmd.extend(["-t", str(PREVIEW_SECONDS)])
-
     cmd.extend([
         "-vf", video_filter,
         "-c:v", "libx264",
@@ -265,19 +199,11 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
     print("====================================\n")
 
     try:
-        process = subprocess.run(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8"
-        )
-
+        process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
         if process.returncode != 0:
             print("FFmpeg 錯誤日誌：\n", process.stderr)
             return None, f"❌ FFmpeg 壓製失敗。\n\n{process.stderr}"
 
-        # 若建立了清理檔，刪除之
         if use_force_style and final_sub_path != subtitle_path:
             try:
                 os.remove(final_sub_path)
@@ -291,7 +217,6 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
             output_path,
             f"✨ 影片與字幕合併成功！\n\n【系統通知】\n{info_msg}\n檔案已就緒，可於右側直接播放或下載。"
         )
-
     except Exception as e:
         return None, f"❌ 伺服器內部發生錯誤：{str(e)}"
 
@@ -301,7 +226,6 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
 # =========================================================
 def handle_full_merge(video, subtitle, cn_sz, en_sz):
     return merge_video_subtitle(video, subtitle, cn_sz, en_sz, preview_mode=False)
-
 
 def handle_preview_merge(video, subtitle, cn_sz, en_sz):
     return merge_video_subtitle(video, subtitle, cn_sz, en_sz, preview_mode=True)
@@ -335,11 +259,11 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as dem
             with gr.Row():
                 cn_size_input = gr.Slider(
                     minimum=10,
-                    maximum=60,
-                    value=20,
+                    maximum=80,          # 放寬上限
+                    value=40,            # 預設值從 20 提高至 40
                     step=1,
                     label="中文/雙語字幕基準大小 (僅 .srt 有效)",
-                    info="對 .srt 強制套用此大小；樣式字幕 (.ass/.ast) 則忽略此設定"
+                    info="對 .srt 強制套用此大小（建議 1080p 約 40~50，720p 約 30~40）"
                 )
 
                 en_size_input = gr.Slider(
