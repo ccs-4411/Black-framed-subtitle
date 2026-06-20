@@ -163,7 +163,7 @@ def build_subtitle_filter(subtitle_path, font_size, margin_v):
 
 
 # =========================================================
-# 核心：影片與字幕合併（已修改分流邏輯）
+# 核心：影片與字幕合併
 # =========================================================
 def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mode=False):
     """
@@ -212,7 +212,7 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, en_size, preview_mo
     prefix = "preview_" if preview_mode else "full_"
     output_path = os.path.join(TEMP_DIR, f"{prefix}{task_id}.mp4")
 
-    # ================= 核心智能縮放邏輯 =================
+    # ================= 核心動態縮放邏輯 =================
     video_height = get_video_height(video_path)
     scale_factor = video_height / 1080.0
 
