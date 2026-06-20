@@ -192,7 +192,7 @@ def merge_video_subtitle(video_path, subtitle_path, cn_size, target_resolution, 
         sub_filter = f"subtitles='{safe_sub_path}'"
     
     filter_elements.append(sub_filter)
-    video_filter = ","join(filter_elements)
+    video_filter = ",".join(filter_elements)  # 修正處：補上了點號
 
     mode_text = "【測試模式 - 僅擷取前2分鐘】" if preview_mode else "【正式完整模式】"
     info_msg = (
