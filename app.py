@@ -1,408 +1,365 @@
 import os
+import sys
 import subprocess
-import uuid
-import re
 import shutil
-import time
-import threading
+import re
 import gradio as gr
 
-# =========================================================
-# 基本設定
-# =========================================================
-TEMP_DIR = "temp_files"
-os.makedirs(TEMP_DIR, exist_ok=True)
-
-TEMP_FILE_EXPIRE_HOURS = 6
-PREVIEW_SECONDS = 120
-
-
-# =========================================================
-# 工具函式：背景清理舊暫存檔
-# =========================================================
-def cleanup_old_temp_files(folder=TEMP_DIR, expire_hours=TEMP_FILE_EXPIRE_HOURS):
-    if not os.path.exists(folder):
-        return
-    now = time.time()
-    expire_seconds = expire_hours * 3600
-    try:
-        for name in os.listdir(folder):
-            path = os.path.join(folder, name)
-            if not os.path.isfile(path):
-                continue
-            try:
-                mtime = os.path.getmtime(path)
-                if now - mtime > expire_seconds:
-                    os.remove(path)
-                    print(f"[清理] 已刪除舊暫存檔: {path}")
-            except Exception as e:
-                print(f"[清理警告] 刪除檔案失敗 {path}: {e}")
-    except Exception as e:
-        print(f"[清理警告] 掃描暫存資料夾失敗: {e}")
-
-
-def start_background_cleanup():
-    def loop():
-        while True:
-            cleanup_old_temp_files()
-            time.sleep(3600)
-    cleanup_old_temp_files()
-    t = threading.Thread(target=loop, daemon=True)
-    t.start()
-
-
-# =========================================================
-# 工具函式：確認 ffmpeg / ffprobe 是否存在
-# =========================================================
-def check_ffmpeg_tools():
-    ffmpeg_path = shutil.which("ffmpeg")
-    ffprobe_path = shutil.which("ffprobe")
-    if not ffmpeg_path:
-        print("【系統警告】找不到 ffmpeg，請確認 Railway 已安裝 ffmpeg。")
+# =====================================================================
+# 🛠️ 環境修復：自動偵測並強制修復 FFmpeg 執行路徑
+# =====================================================================
+FFMPEG_PATH = shutil.which("ffmpeg")
+if not FFMPEG_PATH:
+    if os.path.exists("/usr/bin/ffmpeg"):
+        FFMPEG_PATH = "/usr/bin/ffmpeg"
+    elif os.path.exists("/usr/local/bin/ffmpeg"):
+        FFMPEG_PATH = "/usr/local/bin/ffmpeg"
     else:
-        print(f"【系統初始化】ffmpeg 路徑: {ffmpeg_path}")
-    if not ffprobe_path:
-        print("【系統警告】找不到 ffprobe，請確認 Railway 已安裝 ffmpeg。")
+        FFMPEG_PATH = "ffmpeg"
+
+print(f"📡 系統確認 FFmpeg 核心路徑: {FFMPEG_PATH}")
+
+# =====================================================================
+# 🔄 UI 連動核心邏輯
+# =====================================================================
+def update_ui_components(resolution):
+    if resolution == "1920x1080":
+        return (
+            gr.update(maximum=1800, value=215, label="黑框高度 (1080p 最佳 px)"),
+            gr.update(minimum=-600, maximum=600, value=0, label="垂直位移 (1080p 基準 px)"),
+            gr.update(value=99),
+            gr.update(value=50)
+        )
+    elif resolution == "1280x720":
+        return (
+            gr.update(maximum=1200, value=142, label="黑框高度 (720p 最佳 px)"),
+            gr.update(minimum=-450, maximum=450, value=0, label="垂直位移 (720p 基準 px)"),
+            gr.update(value=66),
+            gr.update(value=33)
+        )
     else:
-        print(f"【系統初始化】ffprobe 路徑: {ffprobe_path}")
-
-
-# =========================================================
-# 影片解析度偵測
-# =========================================================
-def get_video_height(video_path):
-    cmd = [
-        "ffprobe",
-        "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=height",
-        "-of", "csv=s=x:p=0",
-        video_path
-    ]
-    try:
-        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-        height = int(result.stdout.strip())
-        return height
-    except Exception as e:
-        print(f"偵測影片解析度失敗，保底設定為 1080。錯誤: {e}")
-        return 1080
-
-
-# =========================================================
-# 核心轉換：將 .srt 轉為高相容性雙語 .ass 格式（100% 不掉字幕方案）
-# =========================================================
-def convert_srt_to_dual_ass(srt_path, ass_path, font_size, margin_v):
-    try:
-        with open(srt_path, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
-
-        # 計算外文字幕大小（中文的 70%）
-        sub_size = max(int(font_size * 0.7), 12)
-
-        # 建立標準 ASS 檔頭與雙樣式設定 (Default=白大, Trans=黃小)
-        # BGR 顏色格式：&H00FFFFFF& 是純白，&H0000FFFF& 是純黃
-        ass_header = (
-            "[Script Info]\n"
-            "ScriptType: v4.00+\n"
-            "Collisions: Normal\n"
-            "PlayResX: 1920\n"
-            "PlayResY: 1080\n"
-            "Timer: 100.0000\n\n"
-            "[V4+ Styles]\n"
-            "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-             f"Style: Default,WenQuanYi Zen Hei,{font_size},&H00FFFFFF&,&H000000FF&,&H00000000&,&H00000000&,1,0,0,0,100,100,0,0,1,1.5,0,2,10,10,{margin_v},1\n"
-             f"Style: Trans,WenQuanYi Zen Hei,{sub_size},&H0000FFFF&,&H000000FF&,&H00000000&,&H00000000&,0,0,0,0,100,100,0,0,1,1.2,0,2,10,10,{margin_v},1\n\n"
-            "[Events]\n"
-            "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+        return (
+            gr.update(maximum=800, value=95, label="黑框高度 (480p 基準 px)"),
+            gr.update(minimum=-300, maximum=300, value=0, label="垂直位移 (480p 基準 px)"),
+            gr.update(value=44),
+            gr.update(value=22)
         )
 
-        # 解析 SRT 時間軸格式 00:00:00,000 -> ASS 格式 0:00:00.00
-        def convert_time(srt_time):
-            srt_time = srt_time.strip().replace(",", ".")
-            match = re.match(r"(\d+):(\d+):(\d+)\.(\d+)", srt_time)
-            if match:
-                h = int(match.group(1))
-                m = match.group(2)
-                s = match.group(3)
-                ms = match.group(4)[:2]  # ASS 只需要兩位數毫秒
-                return f"{h}:{m}:{s}.{ms}"
-            return "0:00:00.00"
-
-        blocks = content.replace("\r\n", "\n").split("\n\n")
-        dialogues = []
-
-        for block in blocks:
-            lines = [l.strip() for l in block.split("\n") if l.strip()]
-            if len(lines) < 3:
-                continue
-
-            # 尋找包含 --> 的時間軸行
-            time_idx = -1
-            for idx, line in enumerate(lines):
-                if "-->" in line:
-                    time_idx = idx
-                    break
-            
-            if time_idx == -1 or time_idx + 1 >= len(lines):
-                continue
-
-            times = lines[time_idx].split("-->")
-            start_t = convert_time(times[0])
-            end_t = convert_time(times[1])
-
-            # 獲取時間軸下方的所有文字行
-            sub_text_lines = lines[time_idx + 1:]
-            
-            cleaned_texts = []
-            for tl in sub_text_lines:
-                t_clean = re.sub(r"<[^>]+>", "", tl)
-                t_clean = re.sub(r"\{[^}]+\}", "", t_clean).strip()
-                if t_clean:
-                    cleaned_texts.append(t_clean)
-
-            if not cleaned_texts:
-                continue
-
-            # 寫入 ASS 事件軌
-            if len(cleaned_texts) >= 2:
-                # 第一行中文：使用 Default 樣式
-                dialogues.append(f"Dialogue: 0,{start_t},{end_t},Default,,0,0,0,,{cleaned_texts[0]}")
-                # 第二行外文：使用 Trans 樣式（自動變黃、變小），並用 \N 強制換行靠下方
-                dialogues.append(f"Dialogue: 1,{start_t},{end_t},Trans,,0,0,0,,\\N{cleaned_texts[1]}")
-            else:
-                # 單行字幕預設走主樣式
-                dialogues.append(f"Dialogue: 0,{start_t},{end_t},Default,,0,0,0,,{cleaned_texts[0]}")
-
-        with open(ass_path, "w", encoding="utf-8") as f:
-            f.write(ass_header + "\n".join(dialogues))
-        return True
-    except Exception as e:
-        print(f"SRT 轉安全雙語 ASS 失敗: {e}")
+# =====================================================================
+# 📝 字幕高級解析
+# =====================================================================
+def srt_to_ass(srt_path, ass_path, zh_font, zh_bold, zh_italic, zh_size, zh_color, en_font, en_bold, en_italic, en_size, en_color, v_offset, resolution):
+    if not os.path.exists(srt_path):
         return False
+        
+    def convert_color(hex_str):
+        if not hex_str or not hex_str.startswith("#"):
+            return "FFFFFF"
+        hex_str = hex_str.lstrip('#')
+        if len(hex_str) == 6:
+            r, g, b = hex_str[0:2], hex_str[2:4], hex_str[4:6]
+            return f"{b}{g}{r}"
+        return "FFFFFF"
 
-
-# =========================================================
-# 核心：影片與字幕合併
-# =========================================================
-def merge_video_subtitle(video_path, subtitle_path, cn_size, target_resolution, force_ass_style, preview_mode=False):
-    if not video_path or not subtitle_path:
-        return None, "❌ 請確認已上傳影片與字幕檔案。"
-
-    cleanup_old_temp_files()
-    task_id = str(uuid.uuid4())
-
-    sub_ext = os.path.splitext(subtitle_path)[1].lower()
+    ass_zh_color = convert_color(zh_color)
+    ass_en_color = convert_color(en_color)
     
-    # ========== 解析度與縮放比例計算 ==========
-    orig_height = get_video_height(video_path)
-    
-    if target_resolution == "1080p (1920x1080)":
-        target_height = 1080
-    elif target_resolution == "720p (1280x720)":
-        target_height = 720
-    elif target_resolution == "480p (854x480)":
-        target_height = 480
+    b_zh = "1" if zh_bold else "0"
+    i_zh = "1" if zh_italic else "0"
+    b_en = "1" if en_bold else "0"
+    i_en = "1" if en_italic else "0"
+
+    if resolution == "1920x1080":
+        play_res_x, play_res_y = "1920", "1080"
+        margin_v_zh = max(1, 56 + int(v_offset))
+        margin_v_en = max(1, 11 + int(v_offset))
+    elif resolution == "1280x720":
+        play_res_x, play_res_y = "1280", "720"
+        margin_v_zh = max(1, 38 + int(v_offset))
+        margin_v_en = max(1, 8 + int(v_offset))
     else:
-        target_height = orig_height
+        play_res_x, play_res_y = "854", "480"
+        margin_v_zh = max(1, 25 + int(v_offset))
+        margin_v_en = max(1, 5 + int(v_offset))
 
-    # 計算適合目前解析度的基準大小
-    scale_factor = target_height / 1080.0
-    final_cn_size = max(int(cn_size * scale_factor), 15)
-    final_margin_v = max(int(25 * scale_factor), 10)
+    ass_header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        f"PlayResX: {play_res_x}\n"
+        f"PlayResY: {play_res_y}\n"
+        "WrapStyle: 0\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Default,{zh_font},{int(zh_size)},&H00{ass_zh_color},&H000000FF,&H00000000,&H00000000,{b_zh},{i_zh},0,0,100,100,0,0,1,0,0,2,10,10,{margin_v_zh},1\n"
+        f"Style: SubTitle,{en_font},{int(en_size)},&H00{ass_en_color},&H000000FF,&H00000000,&H00000000,{b_en},{i_en},0,0,100,100,0,0,1,0,0,2,10,10,{margin_v_en},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    
+    with open(srt_path, "r", encoding="utf-8") as f:
+        srt_content = f.read()
+        
+    blocks = re.split(r'\n\s*\n', srt_content.strip())
+    ass_lines = []
+    
+    for block in blocks:
+        lines = block.split('\n')
+        if len(lines) >= 3:
+            time_line = lines[1]
+            text_lines = [l.strip() for l in lines[2:] if l.strip()]
+            
+            match = re.match(r'(\d+):(\d+):(\d+),(\d+)\s*-->\s*(\d+):(\d+):(\d+),(\d+)', time_line)
+            if match:
+                g = match.groups()
+                start_ass = f"{int(g[0])}:{g[1]}:{g[2]}.{int(g[3])//10:02d}"
+                end_ass = f"{int(g[4])}:{g[5]}:{g[6]}.{int(g[7])//10:02d}"
+                
+                if len(text_lines) >= 2:
+                    main_text = re.sub(r'<[^>]+>', '', text_lines[0])
+                    sub_text = re.sub(r'<[^>]+>', '', text_lines[1])
+                    full_text = f"{main_text}\\N{{\\rSubTitle}}{sub_text}"
+                else:
+                    full_text = re.sub(r'<[^>]+>', '', text_lines[0]) if text_lines else ""
+                
+                ass_lines.append(f"Dialogue: 0,{start_ass},{end_ass},Default,,0,0,0,,{full_text}")
+                
+    with open(ass_path, "w", encoding="utf-8") as f:
+        f.write(ass_header)
+        f.write("\n".join(ass_lines))
+    return True
 
-    # ========== 字幕預處理分流 ==========
-    final_sub_path = os.path.join(TEMP_DIR, f"render_{task_id}.ass")
-    use_force_style = True
+# =====================================================================
+# 🎬 影音控制
+# =====================================================================
+def process_video_task(
+    video_input, subtitle_input, 
+    resolution, pad_height, v_offset,
+    zh_font, zh_bold, zh_italic, zh_size, zh_color,
+    en_font, en_bold, en_italic, en_size, en_color,
+    preview_start_minutes,
+    mode="preview", 
+    progress=gr.Progress()
+):
+    if not video_input or not subtitle_input:
+        return None, "❌ 請先上傳影片檔案與字幕檔案！"
+        
+    mode_text = "10秒動態預覽" if mode == "preview" else "全片完整轉檔"
+    progress(0, desc=f"🚀 正在配置影音處理畫布...")
+    
+    if resolution == "1920x1080":
+        total_height = 1080 + int(pad_height)
+        scale_cmd = "scale=1920:1080"
+        pad_cmd = f"pad=1920:{total_height}:0:0:black"
+    elif resolution == "1280x720":
+        total_height = 720 + int(pad_height)
+        scale_cmd = "scale=1280:720"
+        pad_cmd = f"pad=1280:{total_height}:0:0:black"
+    elif resolution == "854x480":
+        total_height = 480 + int(pad_height)
+        scale_cmd = "scale=854:480"
+        pad_cmd = f"pad=854:{total_height}:0:0:black"
+    else:
+        scale_cmd = "scale=854:-2"
+        pad_cmd = ""
 
-    if sub_ext == ".srt":
-        # 💡 不管單語雙語，一律安全升級為高相容 .ass 核心，保證絕對不掉字幕
-        if not convert_srt_to_dual_ass(subtitle_path, final_sub_path, final_cn_size, final_margin_v):
-            final_sub_path = subtitle_path
-            use_force_style = False
-    elif sub_ext in [".ass", ".ssa"]:
-        if force_ass_style:
-            # 如果是原生 ASS 又勾選強制修改，一樣幫他做一份基礎強制濾鏡
-            final_sub_path = subtitle_path
-            use_force_style = True
+    current_dir = os.path.abspath(os.path.dirname(__file__))
+    output_filename = "preview_subtitled.mp4" if mode == "preview" else "full_subtitled.mp4"
+    output_video = os.path.join(current_dir, output_filename)
+    preview_ass = os.path.join(current_dir, "render_temp.ass")
+    
+    if os.path.exists(output_video):
+        os.remove(output_video)
+    if os.path.exists(preview_ass):
+        os.remove(preview_ass)
+        
+    if not srt_to_ass(subtitle_input, preview_ass, zh_font, zh_bold, zh_italic, zh_size, zh_color, en_font, en_bold, en_italic, en_size, en_color, v_offset, resolution):
+        return None, "❌ 字幕樣式編譯失敗。"
+        
+    escaped_ass_path = preview_ass.replace(":", "\\:").replace("/", "\\/")
+    subtitles_filter = f"subtitles='{escaped_ass_path}'"
+    
+    vf_chain = f"{scale_cmd},{pad_cmd},{subtitles_filter}" if pad_cmd else f"{scale_cmd},{subtitles_filter}"
+    
+    cmd = [FFMPEG_PATH, "-y", "-threads", "2"]
+    cmd.extend(["-i", video_input])
+    
+    if mode == "preview":
+        mins = int(preview_start_minutes) if preview_start_minutes is not None and preview_start_minutes != "" else 0
+        hh = mins // 60
+        mm = mins % 60
+        ss = 0
+        start_time = f"{hh:02d}:{mm:02d}:{ss:02d}"
+        cmd.extend(["-ss", start_time, "-t", "10"])
+        
+    cmd.extend([
+        "-vf", vf_chain,
+        "-c:v", "libx264",
+        "-preset", "ultrafast",
+        "-crf", "26",
+        "-c:a", "aac",
+        output_video
+    ])
+    
+    cmd_str = " ".join(cmd)
+    log_msg = f"⚙️ 執行指令：\n{cmd_str}\n\n"
+    log_msg += f"📺 輸出模式: {resolution}\n📏 實際黑框增高像素: {pad_height}px | 實際中文字體: {zh_size}px\n"
+    if mode == "preview":
+        log_msg += f"⏱️ 預覽起始時間: {start_time}\n"
+    progress(0.5, desc=f"🎬 FFmpeg 正在進行 [{mode_text}] 渲染中...")
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        if os.path.exists(output_video) and os.path.getsize(output_video) > 0:
+            return output_video, log_msg + f"🎉 [{mode_text}] 處理完成！請觀看右側放大版播放器檢視黑邊細節。"
         else:
-            final_sub_path = subtitle_path
-            use_force_style = False
-    else:
-        final_sub_path = subtitle_path
-        use_force_style = False
+            return None, log_msg + f"❌ 轉檔失敗。\n{result.stderr}"
+    except subprocess.CalledProcessError as e:
+        return None, log_msg + f"💥 FFmpeg 執行失敗！\n{e.stderr}"
 
-    prefix = "preview_" if preview_mode else "full_"
-    output_path = os.path.join(TEMP_DIR, f"{prefix}{task_id}.mp4")
+# =====================================================================
+# 🎨 自訂 CSS 樣式
+# =====================================================================
+custom_css = """
+/* 所有表單元件字體 12pt */
+body, .gradio-container, .gradio-app, .gradio-row, .gradio-column, 
+label, span, p, div, input, select, textarea, button,
+.gr-button, .gr-form-label, .gr-file-label, .gr-textbox, 
+.accordion-label, h3, .gr-markdown h3 {
+    font-size: 12pt !important;
+}
 
-    # ========== 建立 FFmpeg 濾鏡鏈 ==========
-    filter_elements = []
-    if target_height != orig_height:
-        filter_elements.append(f"scale=-2:{target_height}")
+/* 標題 20pt 置中 */
+.app-title {
+    text-align: center;
+    font-size: 20pt !important;
+    font-weight: bold;
+    color: #2c3e50;
+    margin: 1.5rem 0 1rem 0;
+    letter-spacing: 2px;
+    text-shadow: 1px 1px 2px rgba(0,0,0,0.1);
+}
 
-    safe_sub_path = final_sub_path.replace("\\", "/").replace(":", "\\:")
+/* 美化 */
+.gr-group {
+    border-radius: 12px !important;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06) !important;
+    padding: 12px !important;
+    background-color: #fafbfc !important;
+}
+.gr-accordion {
+    border-radius: 12px !important;
+    margin-bottom: 8px !important;
+}
+.gr-row {
+    gap: 1.2rem !important;
+}
+.gr-column {
+    padding: 0.8rem !important;
+}
+"""
+
+# =====================================================================
+# 🎨 介面佈局
+# =====================================================================
+with gr.Blocks(theme=gr.themes.Soft(primary_hue="teal", secondary_hue="slate"), css=custom_css) as demo:
+    gr.HTML("<div class='app-title'>黑框影片與雙語字幕合併</div>")
     
-    if use_force_style and sub_ext != ".srt":
-        # 只有非 srt 且需要強制覆蓋的 ass 才需要手動拼 force_style
-        style = (
-            f"Fontname=WenQuanYi Zen Hei,"
-            f"FontSize={final_cn_size},"
-            f"BorderStyle=1,"
-            f"Outline=1.0,"
-            f"Shadow=0,"
-            f"MarginV={final_margin_v}"
-        )
-        sub_filter = f"subtitles='{safe_sub_path}':force_style='{style}'"
-    else:
-        # 升級後的安全 ASS 已經把樣式寫在檔案內部了，直接載入即可，速度最快最穩
-        sub_filter = f"subtitles='{safe_sub_path}'"
-    
-    filter_elements.append(sub_filter)
-    video_filter = ",".join(filter_elements)
+    with gr.Row():
+        with gr.Column(scale=1):
+            gr.Markdown("### 📂 1. 檔案來源")
+            video_file = gr.File(label="選擇原始影片 (MP4)", file_types=[".mp4"])
+            subtitle_file = gr.File(label="選擇字幕檔案 (SRT)", file_types=[".srt"])
+            
+            with gr.Accordion("📐 解析度與黑框進階設定", open=False):
+                with gr.Group():
+                    gr.Markdown("### 📺 【解析度與黑框邊界】")
+                    res_select = gr.Dropdown(choices=["854x480", "1280x720", "1920x1080", "原始比例"], value="854x480", label="解析度")
+                    pad_slider = gr.Slider(minimum=0, maximum=800, value=95, step=1, label="黑框高度 (480p 基準 px)")
+                    offset_slider = gr.Slider(minimum=-300, maximum=300, value=0, step=1, label="垂直位移 (480p 基準 px)")
+            
+            with gr.Row():
+                btn_expand_subtitle = gr.Button("🎨 設定中外文字幕", variant="secondary")
+            
+            with gr.Accordion(label="🎨 中外文字幕樣式設定（點擊展開/收合）", open=False) as subtitle_accordion:
+                with gr.Group():
+                    gr.Markdown("### 🔤 【中文字型樣式】")
+                    # 擴充中文字型選項
+                    zh_font_dropdown = gr.Dropdown(
+                        choices=[
+                            "Noto Sans CJK TC", "Sans", "DejaVu Sans",
+                            "標楷體", "新細明體", "微軟正黑體", "SimHei", "SimSun"
+                        ],
+                        value="Noto Sans CJK TC",
+                        label="中文字型"
+                    )
+                    with gr.Row():
+                        zh_b = gr.Checkbox(label="粗體", value=True)
+                        zh_i = gr.Checkbox(label="斜體", value=False)
+                    with gr.Row():
+                        zh_size_input = gr.Number(label="中文字體大小 (px)", value=44)
+                        zh_color_input = gr.ColorPicker(label="字體顏色", value="#FFFFFF")
+                
+                with gr.Group():
+                    gr.Markdown("### 🔤 【英文字型樣式】")
+                    # 擴充英文字型選項
+                    en_font_dropdown = gr.Dropdown(
+                        choices=[
+                            "Arial", "Courier New", "Times New Roman",
+                            "Segoe UI", "Tahoma", "Verdana", "Georgia"
+                        ],
+                        value="Arial",
+                        label="英文字型"
+                    )
+                    with gr.Row():
+                        en_b = gr.Checkbox(label="粗體", value=False)
+                        en_i = gr.Checkbox(label="斜體", value=True)
+                    with gr.Row():
+                        en_size_input = gr.Number(label="英文字體大小 (px)", value=22)
+                        en_color_input = gr.ColorPicker(label="字體顏色", value="#FFFF00")
+            
+            gr.Markdown("### ⚙️ 2. 工作流程")
+            preview_start_input = gr.Number(label="預覽起始時間（分鐘）", value=5, precision=0, step=1, minimum=0)
+            with gr.Row():
+                btn_preview = gr.Button("🔄 生成 10 秒預覽", variant="secondary")
+                btn_full = gr.Button("🚀 執行全片轉檔", variant="primary")
+                
+        with gr.Column(scale=1.5):
+            gr.Markdown("### 📺 3. 渲染成果預覽")
+            video_output = gr.Video(label="雙語字幕加黑邊預覽播放器", interactive=False, height=520)
+            
+            gr.Markdown("### 📝 系統日誌")
+            log_output = gr.Textbox(label="Console Log", placeholder="等待任務觸發...", lines=5, max_lines=8, autoscroll=True)
 
-    mode_text = "【測試模式 - 僅擷取前2分鐘】" if preview_mode else "【正式完整模式】"
-    info_msg = (
-        f"{mode_text}\n"
-        f"原始高度: {orig_height}px -> 輸出高度: {target_height}px。\n"
-        f"處理模式: 核心已安全升級為高相容雙語動態樣式轉換\n"
-        f"字體樣式: 主行中文 (大小: {final_cn_size}px / 白色) ｜ 次行外文 (自動縮小 70% / 黃色)"
+    btn_expand_subtitle.click(
+        fn=lambda: gr.update(open=True),
+        outputs=[subtitle_accordion]
     )
 
-    cmd = ["ffmpeg", "-y", "-i", video_path]
-    if preview_mode:
-        cmd.extend(["-t", str(PREVIEW_SECONDS)])
-    cmd.extend([
-        "-vf", video_filter,
-        "-c:v", "libx264",
-        "-preset", "superfast",
-        "-crf", "23",
-        "-c:a", "copy",
-        output_path
-    ])
+    input_components = [
+        video_file, subtitle_file,
+        res_select, pad_slider, offset_slider,
+        zh_font_dropdown, zh_b, zh_i, zh_size_input, zh_color_input,
+        en_font_dropdown, en_b, en_i, en_size_input, en_color_input,
+        preview_start_input
+    ]
 
-    print("\n========== FFmpeg 執行開始 ==========")
-    print("FFmpeg 命令：")
-    print(" ".join(cmd))
-    print("====================================\n")
-
-    try:
-        process = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", timeout=300)
-        if process.returncode != 0:
-            print("FFmpeg 錯誤日誌：\n", process.stderr)
-            return None, f"❌ FFmpeg 壓製失敗。\n\n{process.stderr}"
-
-        # 清理生成的臨時 ass
-        if os.path.exists(final_sub_path) and "render_" in final_sub_path:
-            try: os.remove(final_sub_path)
-            except: pass
-
-        if not os.path.exists(output_path):
-            return None, "❌ FFmpeg 看似成功，但找不到輸出檔案。"
-
-        return (
-            output_path,
-            f"✨ 影片與字幕合併成功！\n\n【系統通知】\n{info_msg}\n檔案已就緒，可於右側直接播放或下載。"
-        )
-    except subprocess.TimeoutExpired:
-        return None, "❌ 壓製逾時！請嘗試降低輸出解析度。"
-    except Exception as e:
-        return None, f"❌ 伺服器內部發生錯誤：{str(e)}"
-
-
-# =========================================================
-# Gradio 按鈕分流函式
-# =========================================================
-def handle_full_merge(video, subtitle, cn_sz, res, force_ass):
-    return merge_video_subtitle(video, subtitle, cn_sz, res, force_ass, preview_mode=False)
-
-def handle_preview_merge(video, subtitle, cn_sz, res, force_ass):
-    return merge_video_subtitle(video, subtitle, cn_sz, res, force_ass, preview_mode=True)
-
-
-# =========================================================
-# 啟動初始化
-# =========================================================
-check_ffmpeg_tools()
-start_background_cleanup()
-
-
-# =========================================================
-# Gradio UI
-# =========================================================
-with gr.Blocks(theme=gr.themes.Soft(primary_hue=gr.themes.colors.indigo)) as demo:
-    gr.Markdown("# 🎬 影片與字幕自動合併工具 (核心升級100%不漏字版)")
-
-    with gr.Row():
-        with gr.Column():
-            video_input = gr.Video(
-                label="1. 上傳原始影片 (MP4 / MKV)",
-                height=360
-            )
-
-            sub_input = gr.File(
-                label="2. 上傳字幕檔案 (.srt / .ass / .ssa)",
-                file_types=[".srt", ".ass", ".ssa"]
-            )
-
-            with gr.Row():
-                resolution_input = gr.Dropdown(
-                    choices=["原始解析度", "1080p (1920x1080)", "720p (1280x720)", "480p (854x480)"],
-                    value="原始解析度",
-                    label="3. 輸出影片解析度",
-                    info="對於 360p 的原始小影片，選「原始解析度」或「720p」處理最快最穩！"
-                )
-                
-                force_ass_style_input = gr.Checkbox(
-                    label="強制修改原生 ASS 字幕大小",
-                    value=True,
-                    info="此選項僅對原本就是 .ass 的檔案生效。上傳的 .srt 檔會由系統自動升級並重新配製雙語樣式。"
-                )
-
-            with gr.Row():
-                cn_size_input = gr.Slider(
-                    minimum=10,
-                    maximum=100,         
-                    value=45,            
-                    step=1,
-                    label="主要中文字幕大小 (基準白色)",
-                    info="建議值：45 左右。系統會自動把第二行外文縮小 30% 並變成亮黃色。"
-                )
-
-            with gr.Row():
-                btn_preview = gr.Button("⏱️ 測試合併（僅前2分鐘）", variant="secondary")
-                btn_submit = gr.Button("🚀 開始正式完整合併", variant="primary")
-
-        with gr.Column():
-            video_output = gr.Video(
-                label="4. 合併結果影片",
-                height=360
-            )
-
-            status_output = gr.Textbox(
-                label="執行狀態 / 錯誤日誌",
-                interactive=False,
-                placeholder="等待操作中..."
-            )
+    res_select.change(
+        fn=update_ui_components,
+        inputs=[res_select],
+        outputs=[pad_slider, offset_slider, zh_size_input, en_size_input]
+    )
 
     btn_preview.click(
-        fn=handle_preview_merge,
-        inputs=[video_input, sub_input, cn_size_input, resolution_input, force_ass_style_input],
-        outputs=[video_output, status_output]
+        fn=lambda *args: process_video_task(*args, mode="preview"),
+        inputs=input_components,
+        outputs=[video_output, log_output]
+    )
+    btn_full.click(
+        fn=lambda *args: process_video_task(*args, mode="full"),
+        inputs=input_components,
+        outputs=[video_output, log_output]
     )
 
-    btn_submit.click(
-        fn=handle_full_merge,
-        inputs=[video_input, sub_input, cn_size_input, resolution_input, force_ass_style_input],
-        outputs=[video_output, status_output]
-    )
-
-
-# =========================================================
-# Railway 啟動
-# =========================================================
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 7860))
-    demo.launch(
-        server_name="0.0.0.0",
-        server_port=port,
-        show_error=True
-    )
+    demo.launch()
+
